@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# 보고 대상에게 메시지를 보내고 보고 기록을 남긴다. 실행기가 PATH에 넣으므로 어느 폴더에서나 쓴다.
+#   herdr-report "[완료] A-01 <요약>"
+# 보고 대상: 워커 → Orchestrator, Orchestrator → Commander. 찾지 못하면 실패로 끝낸다.
+# 맥락 크기와 compact 횟수는 hook이 남긴 값을 자동으로 붙인다. Orchestrator가 세션 장부에 옮겨 적는다.
+set -uo pipefail
+[[ $# -eq 1 && -n "$1" ]] || { echo '사용법: herdr-report "[완료|진행|차단|CLEAR 요청] <내용>"' >&2; exit 2; }
+: "${HERDR_ROLE:?HERDR_ROLE이 없다. herdr-session으로 띄운 세션에서 쓴다}"
+: "${HERDR_PROJECT:?HERDR_PROJECT가 없다. herdr-session으로 띄운 세션에서 쓴다}"
+
+find_role() { hc ls --json --label "project=$HERDR_PROJECT" --label "role=$1" | jq -r '.terminals[0].address // empty'; }
+
+case "$HERDR_ROLE" in
+  commander) echo "Commander의 보고 대상은 사용자다. 화면에 직접 답한다." >&2; exit 2 ;;
+  orchestrator) want=commander ;;
+  *) want=orchestrator ;;
+esac
+message="$1"
+target="$(find_role "$want")"
+if [[ -z "$target" ]]; then
+  parent="$(hc get "${HC_TERMINAL_ID:-}" 2>/dev/null | jq -r '.parent // empty')"
+  [[ -n "$parent" ]] && target="$parent"
+fi
+if [[ -z "$target" && "$want" == orchestrator ]]; then
+  target="$(find_role commander)"
+  [[ -n "$target" ]] && message="[차단] Orchestrator 없음. 원래 보고: $message"
+fi
+[[ -n "$target" ]] || { echo "보고 대상($want)을 찾지 못했다." >&2; exit 1; }
+
+dir="$HOME/.claude/herdr/handoff/$HERDR_PROJECT"
+mkdir -p "$dir"
+tokens="$(cat "$dir/.$HERDR_ROLE.ctx" 2>/dev/null || true)"
+compacts="$(cat "$dir/.$HERDR_ROLE.compacts" 2>/dev/null || echo 0)"
+meta="$HERDR_ROLE ${HC_TERMINAL_ID:-}"
+[[ -n "$tokens" ]] && meta="$meta · ctx $((tokens / 1000))k"
+meta="$meta · compact $compacts"
+
+hc send "$target" "$message ($meta)" >/dev/null || { echo "$target 에 보내지 못했다." >&2; exit 1; }
+date +%s >"$dir/.$HERDR_ROLE.reported"
+echo "보냄: $want($target)"

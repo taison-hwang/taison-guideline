@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# 프로젝트에 하네스를 설치·갱신한다.
+#   harness init <폴더>   새 프로젝트: 하네스 파일과 템플릿을 넣는다. 있는 파일은 덮어쓰지 않는다
+#   harness sync <폴더>   설치된 프로젝트: 하네스가 관리하는 파일만 최신으로 맞춘다
+# 전역(~/.agents, ~/.claude)은 건드리지 않는다. 모든 파일은 그 프로젝트 안에 들어간다.
+set -euo pipefail
+
+HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+MANAGED_SKILLS=(running-herdr-autopilot managing-session-context writing-project-docs)
+BEGIN='<!-- harness:begin -->'
+END='<!-- harness:end -->'
+
+usage() { sed -n '2,4p' "${BASH_SOURCE[0]}" | sed 's/^# *//' >&2; exit 2; }
+say() { printf '%s\n' "$*"; }
+
+copy_if_absent() { # 원본 대상
+  if [[ -e "$2" ]]; then
+    say "유지: ${2#"$TARGET"/} (이미 있음)"
+  else
+    mkdir -p "$(dirname "$2")"
+    sed "s/{{PROJECT}}/$PROJECT/g" "$1" >"$2"
+    say "생성: ${2#"$TARGET"/}"
+  fi
+}
+
+sync_managed() {
+  local s
+  mkdir -p "$TARGET/.agents/skills" "$TARGET/.agents/bin" "$TARGET/.agents/hooks" "$TARGET/.agents/config" "$TARGET/.claude"
+  for s in "${MANAGED_SKILLS[@]}"; do
+    rsync -a --delete --exclude '__pycache__' "$HARNESS/core/skills/$s/" "$TARGET/.agents/skills/$s/"
+  done
+  rsync -a --delete "$HARNESS/core/bin/" "$TARGET/.agents/bin/"
+  rsync -a --delete "$HARNESS/core/hooks/" "$TARGET/.agents/hooks/"
+  cp "$HARNESS/core/config/claude-slim-settings.json" "$TARGET/.agents/config/"
+  chmod +x "$TARGET"/.agents/bin/* "$TARGET"/.agents/hooks/*
+  [[ -e "$TARGET/.claude/skills" ]] || ln -s ../.agents/skills "$TARGET/.claude/skills"
+  update_agents_block
+  git -C "$HARNESS" rev-parse --short HEAD 2>/dev/null >"$TARGET/.agents/harness.version" || echo uncommitted >"$TARGET/.agents/harness.version"
+  say "동기화: 스킬 ${#MANAGED_SKILLS[@]}개, 실행기, hook, AGENTS.md 표시 블록"
+}
+
+update_agents_block() {
+  local file="$TARGET/AGENTS.md" tmp
+  grep -qF "$BEGIN" "$file" && grep -qF "$END" "$file" || {
+    say "오류: AGENTS.md에 '$BEGIN'·'$END' 표시가 없다. 원하는 위치에 두 줄을 넣고 다시 실행한다." >&2
+    exit 1
+  }
+  tmp="$(mktemp)"
+  awk -v begin="$BEGIN" -v end="$END" -v core="$HARNESS/core/AGENTS.core.md" '
+    $0 == begin { print; while ((getline line < core) > 0) print line; skip = 1; next }
+    $0 == end { skip = 0 }
+    !skip { print }
+  ' "$file" >"$tmp"
+  cat "$tmp" >"$file"
+  rm -f "$tmp"
+}
+
+merge_note() { # 원본 대상
+  if [[ -e "$2" ]]; then
+    cmp -s "$1" "$2" || say "확인 필요: ${2#"$TARGET"/}가 이미 있어 하네스 hook을 넣지 않았다. $1 의 내용을 직접 합친다."
+  else
+    mkdir -p "$(dirname "$2")"
+    cp "$1" "$2"
+    say "생성: ${2#"$TARGET"/}"
+  fi
+}
+
+[[ $# -eq 2 ]] || usage
+COMMAND="$1"
+case "$COMMAND" in
+  init) mkdir -p "$2" ;;
+  sync) [[ -d "$2" ]] || { say "폴더가 없다: $2" >&2; exit 1; } ;;
+  *) usage ;;
+esac
+TARGET="$(cd "$2" && pwd)"
+PROJECT="$(basename "$TARGET")"
+
+if [[ "$COMMAND" == sync ]]; then
+  [[ -f "$TARGET/.agents/harness.version" ]] || { say "하네스가 설치된 프로젝트가 아니다: $TARGET (먼저 init)" >&2; exit 1; }
+  sync_managed
+  merge_note "$HARNESS/core/config/claude-settings.json" "$TARGET/.claude/settings.json"
+  merge_note "$HARNESS/core/config/codex-hooks.json" "$TARGET/.codex/hooks.json"
+  exit 0
+fi
+
+# 이미 쓰는 같은 이름의 스킬을 덮어쓰지 않는다.
+if [[ ! -f "$TARGET/.agents/harness.version" ]]; then
+  for s in "${MANAGED_SKILLS[@]}"; do
+    if [[ -e "$TARGET/.agents/skills/$s" || -e "$TARGET/.claude/skills/$s" ]]; then
+      say "중단: 프로젝트에 같은 이름의 스킬이 이미 있다: $s" >&2
+      exit 1
+    fi
+  done
+fi
+
+git -C "$TARGET" rev-parse --git-dir >/dev/null 2>&1 || { git -C "$TARGET" init -q -b main; say "생성: git 저장소"; }
+
+copy_if_absent "$HARNESS/templates/AGENTS.md" "$TARGET/AGENTS.md"
+copy_if_absent "$HARNESS/templates/CLAUDE.md" "$TARGET/CLAUDE.md"
+copy_if_absent "$HARNESS/templates/intent.md" "$TARGET/intent.md"
+copy_if_absent "$HARNESS/templates/harness.env" "$TARGET/.agents/harness.env"
+for f in service-plan/index.md design/index.md status/index.md status/work-plan.md status/status-board.md progress/.gitkeep; do
+  copy_if_absent "$HARNESS/templates/docs/$f" "$TARGET/docs/$f"
+done
+merge_note "$HARNESS/core/config/claude-settings.json" "$TARGET/.claude/settings.json"
+merge_note "$HARNESS/core/config/codex-hooks.json" "$TARGET/.codex/hooks.json"
+
+touch "$TARGET/.gitignore"
+for ignored in /docs/.worktrees/ /graft/ /.ignore; do
+  grep -qxF "$ignored" "$TARGET/.gitignore" || { echo "$ignored" >>"$TARGET/.gitignore"; say "추가: .gitignore에 $ignored"; }
+done
+
+sync_managed
+say "완료: $TARGET"
+say "다음: intent.md와 AGENTS.md의 '프로젝트 규칙'을 채운 뒤, herdr 패널에서 .agents/bin/herdr-session --here commander <codex|claude>"
