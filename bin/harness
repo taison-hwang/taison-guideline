@@ -99,7 +99,7 @@ copy_if_absent "$HARNESS/templates/AGENTS.md" "$TARGET/AGENTS.md"
 copy_if_absent "$HARNESS/templates/CLAUDE.md" "$TARGET/CLAUDE.md"
 copy_if_absent "$HARNESS/templates/intent.md" "$TARGET/intent.md"
 copy_if_absent "$HARNESS/templates/harness.env" "$TARGET/.agents/harness.env"
-for f in service-plan/index.md design/index.md status/index.md status/work-plan.md status/status-board.md progress/.gitkeep; do
+for f in service-plan/index.md design/index.md status/index.md status/work-plan.md status/status-board.md status/decisions.tsv progress/.gitkeep; do
   copy_if_absent "$HARNESS/templates/docs/$f" "$TARGET/docs/$f"
 done
 merge_note "$HARNESS/core/config/claude-settings.json" "$TARGET/.claude/settings.json"

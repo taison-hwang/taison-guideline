@@ -14,7 +14,7 @@ description: herdr 자율주행 운영 규칙(Codex·Claude 공통). Commander·
 | role | 맡는 일 | 하지 않는 일 | 읽을 파일 |
 | --- | --- | --- | --- |
 | `commander` | 사용자와 대화, 요청 전달, 결과·결정 요청 전달, Orchestrator 띄우기·정리 | 작업 분해, 배정, 개발, 조사 | [references/commander.md](references/commander.md) |
-| `orchestrator` | 계획, 의존성 분석, 배정, 결과 근거 확인, 병합 지시, 작업 계획·상태판·세션 장부 관리, 워커 정리 | 코드·방향 문서 수정, 검사 실행 | [references/orchestrator.md](references/orchestrator.md) |
+| `orchestrator` | 계획, 의존성 분석, 배정, 결과 근거 확인, 독립 검증 배정, 병합 지시, 작업 계획·상태판·결정 기록·세션 장부 관리, 워커 정리 | 코드·방향 문서 수정, 검사 실행 | [references/orchestrator.md](references/orchestrator.md) |
 | 그 밖의 값(워커) | 단위 작업의 구현·검증·리뷰 반영·커밋·병합 | 범위 밖 변경, 다른 세션 산출물 중복 구현 | [references/worker.md](references/worker.md) |
 
 흐름: 사용자 → Commander → Orchestrator → 워커 → Orchestrator → Commander → 사용자.
@@ -28,8 +28,10 @@ description: herdr 자율주행 운영 규칙(Codex·Claude 공통). Commander·
 - 외부에 보이거나 되돌리기 어려운 변경: 배포, 원격 push·PR 공개, 운영 데이터 변경, 메일·메시지 발송, 비용 발생
 - 파괴적 작업: 데이터·브랜치·기록 삭제, 강제 push
 - 범위 변경: `intent.md`의 경계를 넘거나 방향 문서의 결정을 뒤집는 경우
-- 수용 기준으로 판단할 수 없는 제품 결정
-- 같은 작업이 재배정 2번 뒤에도 수용 기준을 통과하지 못한 경우
+- 수용 기준으로 판단할 수 없고 실행해 봐도 답이 나오지 않는 제품·선호 결정
+- 같은 작업이 재배정 2번과 재계획 뒤에도 수용 기준을 통과하지 못한 경우
+
+실행해 보면 답이 나오는 갈림길(동작, 성능, 호환성)은 묻지 않고 작은 프로토타입으로 정한다.
 
 멈출 때는 필요한 결정, 선택지, 추천안, 영향을 함께 보낸다. 결정을 기다리는 동안에도 그 결정과 무관한 작업은 계속한다.
 
@@ -46,6 +48,10 @@ description: herdr 자율주행 운영 규칙(Codex·Claude 공통). Commander·
 - 위치를 이미 아는 파일 읽기처럼 도구 호출 몇 번으로 끝나는 검색은 직접 한다.
 - 검색은 가벼운 모델과 낮은 effort로, 리뷰는 상위 모델과 high effort로 맡긴다.
 - 서브에이전트의 결과는 본 세션이 파일·라인·명령 출력으로 직접 확인한 뒤 사용한다.
+
+## 차단 기준
+
+리뷰와 독립 검증은 재현 명령과 출력으로 증명한 것만 막는다. 사용자가 겪을 버그, 실패한 검사, 이번 변경으로 틀려진 문서가 해당한다. 이미 있던 문제, 스타일, 가능성만 있는 위험은 막지 않고 후속 제안으로 적는다.
 
 ## 세션 라벨과 찾기
 
@@ -68,10 +74,12 @@ hc ls --label "project=$HERDR_PROJECT" --label role=worker-1 | jq -r '.terminals
 
 | 말머리 | 보내는 쪽 → 받는 쪽 | 내용 |
 | --- | --- | --- |
-| `[배정]` | Orchestrator → 워커 | 작업 ID, 목표, 범위·담당 파일, 의존성, 수용 기준, 검증 명령, worktree 경로 |
+| `[배정]` | Orchestrator → 워커 | 작업 ID, 목표, 범위·담당 파일, 의존성, 수용 기준(행동과 확인 방법), 검증 명령, worktree 경로 |
 | `[병합]` | Orchestrator → 워커 | 대상 작업 ID와 병합 순서 |
-| `[완료]` | 워커 → Orchestrator, Orchestrator → Commander | 작업 ID, 변경 파일, 커밋, 실행한 검증과 결과, 위험 |
-| `[진행]` | 워커 → Orchestrator | 아직 끝나지 않고 턴을 끝내는 이유, 다시 움직일 조건 |
+| `[검증]` | Orchestrator → 검증자 | 묶음 이름, 분기점 SHA와 head SHA, 완료 조건과 수용 기준, 확인 방법. 작성자의 설명과 worktree 경로는 넣지 않는다 |
+| `[판정]` | 검증자 → Orchestrator | `PASS`·`ISSUES`·`BLOCKED`, head SHA, 기록 경로 |
+| `[완료]` | 워커 → Orchestrator, Orchestrator → Commander | 작업 ID, 변경 파일, 커밋, 검증(실행 확인·추론·미확인 구분), 위험 |
+| `[진행]` | 워커 → Orchestrator | 기다릴 대상이 있어 턴을 끝내는 이유, 다시 움직일 조건 |
 | `[차단]` | 워커 → Orchestrator, Orchestrator → Commander | 막힌 이유, 필요한 결정, 선택지, 추천안 |
 | `[미보고]` | hook → Orchestrator | 워커가 보고 없이 턴을 끝냈다 |
 | `[CLEAR 요청]` | 워커 → Orchestrator, Orchestrator → Commander | 작업 중 정리가 필요한 예외 상황 |

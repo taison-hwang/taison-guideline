@@ -63,9 +63,10 @@ Orchestrator가 고쳐 쓴다. 재개할 때는 `work-plan.md` → `status-board
 
 | 문서 | 내용 |
 | --- | --- |
-| `docs/status/work-plan.md` | 진행·대기 작업만. 작업마다 ID, 의존 묶음, 수용 기준, 의존 작업, 바꿀 파일·모듈 |
+| `docs/status/work-plan.md` | 진행·대기 작업만. 작업마다 ID, 의존 묶음, 수용 기준(행동과 확인 방법), 의존 작업, 바꿀 파일·모듈 |
 | `docs/status/status-board.md` | 작업 표 하나와 미확정 사항 |
 | `docs/status/completed.md` | 끝난 행을 옮겨 두는 기록. 새 행을 아래에 추가한다 |
+| `docs/status/decisions.tsv` | 결정 한 줄 기록. 새 줄만 추가한다. 형식은 `running-herdr-autopilot`의 `references/orchestrator.md` |
 
 - 두 문서 맨 위의 `갱신: <date -Iseconds>`를 고칠 때마다 바꾼다.
 - 상태 값은 `대기`, `진행`, `리뷰`, `완료`, `차단`이다. `완료`는 검증 근거가 있을 때만 쓴다.

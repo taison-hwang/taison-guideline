@@ -14,12 +14,17 @@ P="$WORK/demo"
 "$ROOT/bin/harness" init "$P" >/dev/null
 
 echo "== 설치"
-for f in AGENTS.md CLAUDE.md intent.md .gitignore .agents/harness.env .claude/settings.json .codex/hooks.json docs/status/work-plan.md .agents/bin/herdr-session .agents/hooks/context-signal.sh .agents/skills/running-herdr-autopilot/SKILL.md .agents/skills/writing-project-docs/scripts/check_md_links.py; do
+for f in AGENTS.md CLAUDE.md intent.md .gitignore .agents/harness.env .claude/settings.json .codex/hooks.json docs/status/work-plan.md docs/status/decisions.tsv .agents/bin/herdr-session .agents/hooks/context-signal.sh .agents/skills/running-herdr-autopilot/SKILL.md .agents/skills/writing-project-docs/scripts/check_md_links.py; do
   check "파일 없음: $f" "[ -e '$P/$f' ]"
 done
 check "skills 링크" "[ \"\$(readlink '$P/.claude/skills')\" = ../.agents/skills ]"
 check "프로젝트 이름 치환" "grep -q '에이전트 지침 — demo' '$P/AGENTS.md'"
 check "블록 삽입" "grep -q 'running-herdr-autopilot' '$P/AGENTS.md'"
+check "확인 규칙이 항상 적용 지침에 있음" "grep -q '주석, 문서, 보고, 요약은 단서다' '$P/AGENTS.md'"
+check "결정 기록 머리글" "[ \"\$(head -n 1 '$P/docs/status/decisions.tsv' | awk -F'\t' '{print NF}')\" = 6 ]"
+check "작업 계획에 시작 계약" "grep -q '완료 조건' '$P/docs/status/work-plan.md'"
+check "워커 역할 파일에 검증 절차" "grep -q '\`\[검증\]\`을 받았을 때' '$P/.agents/skills/running-herdr-autopilot/references/worker.md'"
+check "검증자 역할은 워커로 처리" "'$P/.agents/bin/herdr-session' --dry-run verifier-1 codex | grep -q 'gpt-6.1-sol'"
 check "worktree ignore" "grep -qxF '/docs/.worktrees/' '$P/.gitignore'"
 check "graft 파일 ignore" "grep -qxF /graft/ '$P/.gitignore' && grep -qxF /.ignore '$P/.gitignore'"
 check "설정 JSON" "jq -e .hooks.PreCompact '$P/.claude/settings.json' >/dev/null && jq -e .hooks.SessionStart '$P/.codex/hooks.json' >/dev/null"
@@ -50,7 +55,9 @@ fire() { printf '{"session_id":"s1","transcript_path":"%s","hook_event_name":"Po
 usage 299000; check "임계 미만 무출력" "[ -z \"\$(fire)\" ]"
 usage 300000; out="$(fire)"
 check "임계에서 알림" "printf '%s' \"\$out\" | jq -e '.hookSpecificOutput.additionalContext | test(\"소프트 신호 300k\")' >/dev/null"
-check "워커에 /clear 요청 금지 안내" "printf '%s' \"\$out\" | grep -q '새 작업을 시작하지 말고'"
+check "워커에 계속 진행 안내" "printf '%s' \"\$out\" | grep -q '수용 기준까지 계속한다'"
+check "워커에 /clear 요청 금지 안내" "printf '%s' \"\$out\" | grep -q '/clear를 요청하지 않는다'"
+check "워커에 마무리 지시 없음" "! printf '%s' \"\$out\" | grep -q '커밋 가능한 지점'"
 usage 350000; check "간격 안에서 재알림 없음" "[ -z \"\$(fire)\" ]"
 usage 400000; check "간격을 넘으면 재알림" "[ -n \"\$(fire)\" ]"
 usage 100000; fire >/dev/null; usage 310000

@@ -11,6 +11,7 @@
 | 리셋 필요성은 모델에 따라 다르다 | 리셋이 필수였던 원인은 일부 모델의 context anxiety였다. 리셋을 모델의 약점이 아니라 작업 구조의 경계에 두면 모델이 바뀌어도 유효하다 |
 | 고정 비율은 의미가 일정하지 않다 | 30%는 200K 창에서 60K, 1M 창에서 300K다. 그래서 토큰 수로 잰다 |
 | 살아남는 것은 디스크뿐이다 | 리셋이든 compact든 대화는 사라지거나 요약된다. 작업 도중 쓴 핸드오프도 모델이 쓴 요약이다 |
+| 신호가 마무리를 재촉하면 안 된다 | 공식 지침은 한도가 가까우면 모델이 일을 마무리하려 할 수 있으니 자동 compact를 미리 알리라고 한다. 그래서 워커 소프트 신호는 계속하라고 안내한다(2026-11-07 변경). 300k에 이른 세션이 없어 효과는 재지 못했다 |
 
 ## 자료와 다르게 정한 것
 
@@ -26,7 +27,7 @@
 | 값 | 기본 | 이유 |
 | --- | --- | --- |
 | 소프트 신호 | 300k 토큰 | 자료의 30%를 1M 창 기준 토큰으로 옮겼다 |
-| auto-compact | 400k 토큰 | 자료의 권장(1M 모델 300~400K)의 위쪽. 소프트 신호 뒤 마무리할 여유를 둔다. 기본값 약 967K까지 두지 않는다 |
+| auto-compact | 400k 토큰 | 자료의 권장(1M 모델 300~400K)의 위쪽. 소프트 신호 뒤 Orchestrator·Commander가 상태를 정리할 여유를 둔다. 기본값 약 967K까지 두지 않는다 |
 | 연관 작업 연장 | 요청 약 30회 | jobtailor 실측의 손익 분기(200k에서 약 40요청, 300k에서 약 19요청) |
 | 1시간 넘게 쉰 세션 | 큰 작업은 정리 후 | jobtailor 실측: 첫 요청의 cache write 중앙값이 맥락의 약 80% |
 
@@ -68,6 +69,7 @@ Claude Code 2.1.318, Codex CLI 0.166.0, herdr 0.9.5에서 실제 세션으로 �
 
 ## 출처
 
+- [Prompting best practices](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/claude-prompting-best-practices): 한도 근처의 조기 마무리와 compact 안내
 - [Context window](https://code.claude.com/docs/en/context-window.md): compact 후 남는 것
 - [Model configuration](https://code.claude.com/docs/en/model-config.md#set-the-auto-compact-window): auto-compact 창, 기본 약 967K
 - [Hooks](https://code.claude.com/docs/en/hooks.md): `SessionStart`의 `compact` matcher, `PreCompact`

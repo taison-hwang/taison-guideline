@@ -10,9 +10,9 @@ herdr로 개발을 자율주행하는 기본 동작만 담은 하네스다. 사�
 | `managing-session-context` | 작업 경계의 `/clear`, 작업 중 auto-compact, 소프트 신호, compact 후 복구 |
 | `writing-project-docs` | 방향 문서, 개발 과정 기록, 작업 계획·상태판, 문서 분할·색인 |
 
-그 밖에 세션 실행기와 보고 명령(`core/bin/`), 역할 주입·컨텍스트·보고 누락 방지 hook(`core/hooks/`), 프로젝트 템플릿(`templates/`)이 있다. 린트·테스트 자동화, TDD·리뷰 절차, 언어별 설정은 담지 않는다. 프로젝트가 `AGENTS.md`의 검사 명령과 전용 스킬로 더한다.
+그 밖에 세션 실행기와 보고 명령(`core/bin/`), 역할 주입·컨텍스트·보고 누락 방지 hook(`core/hooks/`), 프로젝트 템플릿(`templates/`)이 있다. 린트·테스트 자동화, TDD 절차, 언어별 설정은 담지 않는다. 프로젝트가 `AGENTS.md`의 검사 명령과 전용 스킬로 더한다.
 
-정책의 근거와 검증 결과는 [docs/context-policy.md](docs/context-policy.md)에 있다.
+컨텍스트 정책의 근거와 검증 결과는 [docs/context-policy.md](docs/context-policy.md), 규칙별 강제 수단과 전제, 독립 검증 시험은 [docs/rules-and-enforcement.md](docs/rules-and-enforcement.md)에 있다.
 
 ## 시작
 
