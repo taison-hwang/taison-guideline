@@ -28,10 +28,6 @@ skill="${HERDR_HOME:-.}/.agents/skills/running-herdr-autopilot"
   fi
   if [ "$source_name" = compact ]; then
     echo "[compact 복구] 아래로 위치를 확인하고 수용 기준을 다시 읽은 뒤 이어 간다. 기억나지 않는 결정은 추측하지 말고 파일과 커밋에서 확인한다. 규칙: managing-session-context 스킬."
-    case "$role_file" in
-      worker) echo "맡은 작업은 끝까지 하고, /clear 전에는 새 작업을 시작하지 않는다." ;;
-      orchestrator) echo "아직 보내지 않았으면 Commander에 [CLEAR 요청]을 보낸다." ;;
-    esac
     if [ -f "$dir/$HERDR_ROLE.md" ]; then
       echo "--- 작업 상태($dir/$HERDR_ROLE.md)"
       head -n 40 "$dir/$HERDR_ROLE.md"

@@ -82,7 +82,7 @@ hc ls --label "project=$HERDR_PROJECT" --label role=worker-1 | jq -r '.terminals
 | `[진행]` | 워커 → Orchestrator | 기다릴 대상이 있어 턴을 끝내는 이유, 다시 움직일 조건 |
 | `[차단]` | 워커 → Orchestrator, Orchestrator → Commander | 막힌 이유, 필요한 결정, 선택지, 추천안 |
 | `[미보고]` | hook → Orchestrator | 워커가 보고 없이 턴을 끝냈다 |
-| `[CLEAR 요청]` | 워커 → Orchestrator, Orchestrator → Commander | 작업 중 정리가 필요한 예외 상황, 또는 CLEAR 조건이라 새 작업을 시작하지 않았다는 알림 |
+| `[CLEAR 요청]` | 워커 → Orchestrator, Orchestrator → Commander | 워커: 작업 중 복구가 안 되는 예외 상황. Orchestrator: 소프트 신호에 따른 자기 정리 요청 |
 | `재개` | 정리한 쪽 → 정리된 세션 | 작업 상태 파일을 읽고 이어 간다 |
 
 - 보고는 `herdr-report "[완료] <요약>"`로 한다. 실행기가 PATH에 넣어 둔 명령으로, 받는 세션을 찾아 보내고 맥락 크기와 compact 횟수를 자동으로 붙인다. 긴 내용은 파일로 남기고 경로만 보낸다.
