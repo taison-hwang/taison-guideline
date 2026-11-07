@@ -75,14 +75,14 @@ hc ls --label "project=$HERDR_PROJECT" --label role=worker-1 | jq -r '.terminals
 | 말머리 | 보내는 쪽 → 받는 쪽 | 내용 |
 | --- | --- | --- |
 | `[배정]` | Orchestrator → 워커 | 작업 ID, 목표, 범위·담당 파일, 의존성, 수용 기준(행동과 확인 방법), 검증 명령, worktree 경로 |
-| `[병합]` | Orchestrator → 워커 | 대상 작업 ID와 병합 순서 |
+| `[병합]` | Orchestrator → 워커 | 대상 작업 ID와 병합 순서. 독립 검증을 받았으면 판정 SHA |
 | `[검증]` | Orchestrator → 검증자 | 묶음 이름, 분기점 SHA와 head SHA, 완료 조건과 수용 기준, 확인 방법. 작성자의 설명과 worktree 경로는 넣지 않는다 |
 | `[판정]` | 검증자 → Orchestrator | `PASS`·`ISSUES`·`BLOCKED`, head SHA, 기록 경로 |
 | `[완료]` | 워커 → Orchestrator, Orchestrator → Commander | 작업 ID, 변경 파일, 커밋, 검증(실행 확인·추론·미확인 구분), 위험 |
 | `[진행]` | 워커 → Orchestrator | 기다릴 대상이 있어 턴을 끝내는 이유, 다시 움직일 조건 |
 | `[차단]` | 워커 → Orchestrator, Orchestrator → Commander | 막힌 이유, 필요한 결정, 선택지, 추천안 |
 | `[미보고]` | hook → Orchestrator | 워커가 보고 없이 턴을 끝냈다 |
-| `[CLEAR 요청]` | 워커 → Orchestrator, Orchestrator → Commander | 작업 중 정리가 필요한 예외 상황 |
+| `[CLEAR 요청]` | 워커 → Orchestrator, Orchestrator → Commander | 작업 중 정리가 필요한 예외 상황, 또는 CLEAR 조건이라 새 작업을 시작하지 않았다는 알림 |
 | `재개` | 정리한 쪽 → 정리된 세션 | 작업 상태 파일을 읽고 이어 간다 |
 
 - 보고는 `herdr-report "[완료] <요약>"`로 한다. 실행기가 PATH에 넣어 둔 명령으로, 받는 세션을 찾아 보내고 맥락 크기와 compact 횟수를 자동으로 붙인다. 긴 내용은 파일로 남기고 경로만 보낸다.

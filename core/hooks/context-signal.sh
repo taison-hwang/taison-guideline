@@ -47,8 +47,8 @@ printf '%s\n' "$tokens" >"$state"
 kilo=$((tokens / 1000))
 case "$HERDR_ROLE" in
   commander) todo="사용자에게 보고할 내용을 마무리하고 컨텍스트 정리를 사용자에게 요청한다." ;;
-  orchestrator) todo="처리 중인 보고까지 마치고 상태판·세션 장부를 고친 뒤 Commander에 [CLEAR 요청]을 보낸다." ;;
-  *) todo="지금 작업은 수용 기준까지 계속한다. 맥락이 차면 자동 compact가 처리하므로 이 신호 때문에 서두르거나 미완성 작업을 [완료]로 보고하지 않는다. /clear를 요청하지 않는다." ;;
+  orchestrator) todo="처리 중인 보고까지 마치고, 새 배정은 정리 뒤로 미뤄 상태판에 대기로 적고, 세션 장부를 고친 뒤 Commander에 [CLEAR 요청]을 보낸다." ;;
+  *) todo="지금 작업은 수용 기준까지 계속한다. 맥락이 차면 자동 compact가 처리하므로 이 신호 때문에 서두르거나 미완성 작업을 [완료]로 보고하지 않는다. 신호만으로 /clear를 요청하지 않는다. 정리될 때까지 새 작업은 시작하지 않는다." ;;
 esac
 message="[컨텍스트 소프트 신호 ${kilo}k] ${todo} 규칙: managing-session-context 스킬."
 jq -nc --arg e "$event" --arg m "$message" '{hookSpecificOutput: {hookEventName: $e, additionalContext: $m}}'
