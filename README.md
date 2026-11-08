@@ -40,6 +40,37 @@ bin/harness sync <프로젝트 경로>    # 이미 설치한 프로젝트 갱신
 
 - `intent.md`와 `AGENTS.md`의 "프로젝트 규칙"
 - `.agents/harness.env`: `HERDR_AUTONOMOUS=1`은 권한 확인 없이 도는 모드다. 운영 자원이나 비밀에 닿는 프로젝트는 0으로 둔다.
+- `.agents/harness.env`의 역할별 에이전트·모델(아래)
+
+#### 역할별 에이전트·모델
+
+Commander, Orchestrator, 워커, 검증자가 쓸 에이전트(codex | claude)와 모델·effort를 `.agents/harness.env`에 정한다. Commander와 Orchestrator는 세션을 띄울 때 도구를 적지 않고 이 값을 따른다. 정하지 않으면 띄우는 세션이 자기와 같은 에이전트를 고르기 쉽다.
+
+```bash
+HERDR_COMMANDER_TOOL=codex          # --here commander 에서 도구를 생략하면 쓴다
+HERDR_ORCHESTRATOR_TOOL=claude
+HERDR_ORCHESTRATOR_MODEL=opus       # 비우면 실행기 기본 표
+HERDR_ORCHESTRATOR_EFFORT=high
+HERDR_WORKER_TOOL=codex
+HERDR_WORKER_MODEL=gpt-6.1-sol
+HERDR_WORKER_EFFORT=high
+HERDR_VERIFIER_TOOL=claude          # 독립 검증자(verifier-*). 작성자와 다른 도구를 권한다
+HERDR_VERIFIER_MODEL=opus
+HERDR_VERIFIER_EFFORT=high
+```
+
+| 값 | 정하는 순서 |
+| --- | --- |
+| 에이전트 | 실행기 인자(`codex`·`claude`) > `HERDR_<역할>_TOOL`. 둘 다 없으면 실행기가 거부한다 |
+| 모델 | `--model` 인자 > `HERDR_<역할>_MODEL` > 기본 표 |
+| effort | effort 인자 > `HERDR_<역할>_EFFORT` > 기본 표 |
+
+- 역할은 `COMMANDER`, `ORCHESTRATOR`, `WORKER`, `VERIFIER`다. `verifier-<n>` 역할은 `VERIFIER` 설정을 쓰고, `HERDR_VERIFIER_TOOL`이 비어 있으면 `WORKER` 설정을 쓴다. 기본 표와 워커 수 상한은 검증자도 워커와 같다.
+- 검증자는 작성자의 맥락에 묶이지 않게 워커와 다른 도구, 상위 모델과 high effort로 두기를 권한다. 비워 두면 Orchestrator가 작성자와 다른 도구를 인자로 적어 띄운다.
+- `*_MODEL`·`*_EFFORT`는 실제 도구가 `*_TOOL`과 같을 때만 쓴다. 검증자를 작성자와 다른 도구로 띄우면 그 도구의 기본 표를 쓴다(codex 모델 이름이 claude에 넘어가지 않게).
+- 기본 표: codex는 Commander·Orchestrator `gpt-6.1-terra`/medium, 워커 `gpt-6.1-sol`/high. claude는 Commander `sonnet`/medium, Orchestrator `opus`/high, 워커 `opus`/medium.
+- 이미 떠 있는 세션에는 적용되지 않는다. 바꾼 뒤 새로 띄우는 세션부터 쓴다.
+- 어떤 명령이 나가는지는 `.agents/bin/herdr-session --dry-run worker-1`처럼 확인한다.
 
 ### 3. herdr 패널에서 Commander 띄우기
 
@@ -47,7 +78,8 @@ herdr 화면에서 패널을 하나 열고, 프로젝트 폴더로 가서 실행
 
 ```bash
 cd <프로젝트 경로>
-.agents/bin/herdr-session --here commander codex    # Claude를 쓰면 마지막을 claude로
+.agents/bin/herdr-session --here commander          # HERDR_COMMANDER_TOOL을 정해 둔 경우
+.agents/bin/herdr-session --here commander codex    # 직접 고를 때(claude도 된다)
 ```
 
 실행하면 다음이 일어난다.
@@ -55,10 +87,32 @@ cd <프로젝트 경로>
 1. herdr 패널은 hc 터미널이 아니므로 실행기가 `hc run --bg`로 hc 터미널을 새로 열어 `role=commander`, `project=<프로젝트 폴더 이름>` 라벨을 붙이고, 이 패널을 `hc attach`로 거기에 붙인다. 이미 hc 터미널 안에서 실행했다면 새로 열지 않고 지금 터미널에 라벨을 붙인다.
 2. 그 안에서 codex(또는 claude)가 프로젝트 폴더를 작업 위치로 해서 뜬다.
 3. 새 폴더에서 처음 띄우면 폴더 신뢰 확인 창이 뜬다. codex는 `1. Trust and continue`, claude는 `Yes, I trust this folder`를 골라 한 번 승인한다. 이후 같은 폴더에 뜨는 세션은 묻지 않는다. codex는 이보다 먼저 업데이트 안내를 띄울 수 있다.
+4. 이 패널이 보기 패널의 기준이 되고, 패널 이름이 `commander`로 바뀐다.
 
 ### 4. 목표 말하기
 
 Commander에게 목표를 말한다. Orchestrator가 없으면 Commander가 띄우고, 워커는 Orchestrator가 띄운다. 둘 다 실행기로 띄우므로 사용자가 직접 띄울 필요는 없다.
+
+### 보기 패널
+
+`HERDR_VIEW_PANES=1`(기본)이면 Orchestrator·워커·검증자가 뜰 때마다 실행기가 Commander 패널이 있는 탭을 나눠 그 세션을 보여 준다.
+
+```
+┌──────────────┬───────────────────┐
+│              │ hc:orchestrator   │
+│  commander   ├───────────────────┤
+│              │ hc:worker-1       │
+│              ├───────────────────┤
+│              │ hc:worker-2       │
+└──────────────┴───────────────────┘
+```
+
+- 첫 세션은 Commander 패널 오른쪽에, 다음부터는 보기 패널 중 가장 높은 것을 아래로 나눈다. 패널 이름은 `hc:<role>`이다.
+- 보기 전용(`hc attach --observe`)이라 입력이 세션에 가지 않는다. 세션에 직접 답해야 하면 그 패널에서 `ctrl+\`로 떨어진 뒤 `hc attach <주소>`로 붙는다.
+- 세션이 끝나면 패널도 닫힌다. 같은 역할의 세션을 다시 쓰면(`/clear` 재사용) 패널을 새로 만들지 않는다.
+- 보기 패널을 닫아도 세션은 계속 돈다. 다시 보려면 아무 패널에서 `hc attach --observe <주소>`를 실행한다.
+- 기준은 `--here`를 실행한 herdr 패널이다. 그 패널을 닫았거나 herdr 밖에서 띄웠으면 보기 패널 없이 백그라운드로만 뜬다.
+- 화면이 작으면 `HERDR_MAX_WORKERS`를 줄이거나 `HERDR_VIEW_PANES=0`으로 끈다.
 
 ### 떠나기, 다시 붙기, 끝내기
 
@@ -87,7 +141,9 @@ bin/harness sync <프로젝트>
 | `hc(herdr-core)가 없다` | `hc`가 설치되지 않았거나 PATH에 없다. 위 설치 명령을 실행하고 `hc --version`으로 확인한다 |
 | `command not found: hc` | 위와 같다. 설치 위치 `~/.local/bin`을 PATH에 넣는다 |
 | `--here`로 띄웠는데 화면이 멈춘 채 아무것도 안 나온다 | `--bg` 없는 `hc run`으로 띄우던 이전 실행기다(끝날 때까지 기다렸다가 출력만 보여 준다). `bin/harness sync`로 갱신한 뒤 다시 띄운다. 이미 뜬 세션은 `hc attach <주소>`로 붙거나 `hc kill <주소>`로 끝낸다 |
+| 보기 패널이 생기지 않는다 | Commander를 `--here`로 herdr 패널에서 띄워야 기준 패널이 생긴다. 이전 실행기로 띄운 Commander는 기준이 없으니 `bin/harness sync` 뒤 다시 띄운다. 그 패널을 닫았어도 생기지 않는다. `HERDR_VIEW_PANES=1`인지 확인한다 |
 | 패널을 닫았더니 Commander가 사라진 것 같다 | 세션은 hc 터미널에 남아 있다. `hc ls --label "project=<프로젝트 폴더 이름>"`로 찾아 `hc attach`로 붙는다 |
+| `도구를 정하지 못했다` | 도구 인자가 없고 `.agents/harness.env`의 `HERDR_<역할>_TOOL`도 비어 있다. 값을 채우거나 인자로 `codex`·`claude`를 준다. 예전 `harness.env`에는 이 줄이 없으니 위 예시를 더한다 |
 | codex가 띄운 명령이 hc 밖에서 돈다 | 실행기가 codex에 `--no-daemon`을 붙인다. 예전 실행기면 `bin/harness sync`로 갱신한다 |
 
 ## 구조
@@ -98,6 +154,7 @@ core/                 프로젝트에 복사되는 원본
   skills/             스킬 3개
   bin/herdr-session   세션 실행기, 세션별 모델 표의 원본
   bin/herdr-report    보고 명령
+  bin/herdr-view      보기 패널(herdr 탭을 나눠 세션에 보기 전용으로 붙인다)
   hooks/              역할 주입·compact 복구, 소프트 신호, compact 직전 스냅샷, 보고 누락 방지
   config/             Claude·Codex hook 설정
 templates/            init 때 한 번만 넣는 파일

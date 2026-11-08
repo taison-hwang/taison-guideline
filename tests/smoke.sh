@@ -16,7 +16,7 @@ P="$WORK/demo"
 "$ROOT/bin/harness" init "$P" >/dev/null
 
 echo "== 설치"
-for f in AGENTS.md CLAUDE.md intent.md .gitignore .agents/harness.env .claude/settings.json .codex/hooks.json docs/status/work-plan.md docs/status/decisions.tsv .agents/bin/herdr-session .agents/hooks/context-signal.sh .agents/skills/running-herdr-autopilot/SKILL.md .agents/skills/writing-project-docs/scripts/check_md_links.py; do
+for f in AGENTS.md CLAUDE.md intent.md .gitignore .agents/harness.env .claude/settings.json .codex/hooks.json docs/status/work-plan.md docs/status/decisions.tsv .agents/bin/herdr-session .agents/bin/herdr-view .agents/hooks/context-signal.sh .agents/skills/running-herdr-autopilot/SKILL.md .agents/skills/writing-project-docs/scripts/check_md_links.py; do
   check "파일 없음: $f" "[ -e '$P/$f' ]"
 done
 check "skills 링크" "[ \"\$(readlink '$P/.claude/skills')\" = ../.agents/skills ]"
@@ -168,6 +168,21 @@ git -C "$P" worktree add -q docs/.worktrees/w -b w
 W="$P/docs/.worktrees/w/.agents/bin/herdr-session"
 check "--here: hc 터미널 밖이면 hc 터미널을 열고 붙는다" "env -u HC_TERMINAL_ID '$S' --dry-run --here commander codex | grep -q '^hc run --bg --json --label role=commander --label project=demo.*&& hc attach'"
 check "--here: hc 터미널 안이면 그 터미널에 라벨" "HC_TERMINAL_ID=t5 '$S' --dry-run --here commander codex | grep -q '^hc label t5 role=commander project=demo'"
+check "도구 생략·설정 없음이면 거부" "! '$S' --dry-run worker-1 >/dev/null 2>&1"
+check "harness.env 템플릿에 역할별 도구 칸" "grep -q '^HERDR_WORKER_TOOL=' '$P/.agents/harness.env' && grep -q '^HERDR_ORCHESTRATOR_TOOL=' '$P/.agents/harness.env'"
+set_env 's/^HERDR_ORCHESTRATOR_TOOL=.*/HERDR_ORCHESTRATOR_TOOL=claude/; s/^HERDR_ORCHESTRATOR_MODEL=.*/HERDR_ORCHESTRATOR_MODEL=sonnet/; s/^HERDR_WORKER_TOOL=.*/HERDR_WORKER_TOOL=codex/; s/^HERDR_WORKER_MODEL=.*/HERDR_WORKER_MODEL=gpt-6.1-terra/; s/^HERDR_WORKER_EFFORT=.*/HERDR_WORKER_EFFORT=xhigh/' "$P/.agents/harness.env"
+check "Orchestrator 도구·모델을 설정에서" "'$S' --dry-run orchestrator | grep -q 'claude .*--model sonnet --effort high'"
+check "워커 도구·모델·effort를 설정에서" "'$S' --dry-run worker-1 | grep -q 'codex --no-daemon .*-m gpt-6.1-terra .*effort=\"xhigh\"'"
+check "검증자도 워커 설정" "'$S' --dry-run verifier-1 | grep -q 'gpt-6.1-terra'"
+check "effort 인자가 설정보다 우선" "'$S' --dry-run worker-1 low | grep -q 'effort=\"low\"'"
+check "--model 인자가 설정보다 우선" "'$S' --dry-run --model gpt-x worker-1 | grep -q -- '-m gpt-x'"
+check "다른 도구를 적으면 설정 모델을 넘기지 않음" "'$S' --dry-run verifier-1 claude | grep -q -- '--model opus --effort medium'"
+check "검증자 설정 비면 워커 설정" "'$S' --dry-run verifier-1 | grep -q 'gpt-6.1-terra'"
+set_env 's/^HERDR_VERIFIER_TOOL=.*/HERDR_VERIFIER_TOOL=claude/; s/^HERDR_VERIFIER_MODEL=.*/HERDR_VERIFIER_MODEL=opus/; s/^HERDR_VERIFIER_EFFORT=.*/HERDR_VERIFIER_EFFORT=xhigh/' "$P/.agents/harness.env"
+check "검증자는 검증자 설정" "'$S' --dry-run verifier-1 | grep -q 'claude .*--model opus --effort xhigh'"
+check "워커는 검증자 설정을 쓰지 않음" "'$S' --dry-run worker-1 | grep -q 'codex --no-daemon'"
+set_env 's/^\(HERDR_[A-Z]*_TOOL\)=.*/\1=/; s/^\(HERDR_[A-Z]*_MODEL\)=.*/\1=/; s/^\(HERDR_[A-Z]*_EFFORT\)=.*/\1=/' "$P/.agents/harness.env"
+check "역할 설정을 다시 비움" "! grep -qE '^HERDR_[A-Z]+_(TOOL|MODEL|EFFORT)=.' '$P/.agents/harness.env'"
 check "worktree에서도 프로젝트 이름 유지" "'$W' --dry-run worker-1 claude | grep -q 'project=demo'"
 mkdir -p "$WORK/stub"
 cat >"$WORK/stub/hc" <<'EOF'
@@ -184,6 +199,52 @@ set_env 's/^HERDR_MAX_WORKERS=.*/HERDR_MAX_WORKERS=2/' "$P/.agents/harness.env"
 check "워커 상한 초과 거부" "! PATH='$WORK/stub:$PATH' '$S' worker-3 claude >/dev/null 2>&1"
 set_env 's/^HERDR_MAX_WORKERS=.*/HERDR_MAX_WORKERS=3/' "$P/.agents/harness.env"
 check "Orchestrator는 워커 수에 넣지 않음" "PATH='$WORK/stub:$PATH' '$S' worker-3 claude >/dev/null 2>&1; [ \$? -ne 1 ] || ! PATH='$WORK/stub:$PATH' '$S' worker-3 claude 2>&1 | grep -q '이미'"
+
+echo "== 보기 패널"
+check "--here는 사용자 패널을 기준으로 넘김" "env -u HC_TERMINAL_ID HERDR_PANE_ID=w9:p1 '$S' --dry-run --here commander codex | grep -q 'HERDR_VIEW_ANCHOR=w9:p1'"
+check "자식 세션에 기준 패널 전달" "HERDR_VIEW_ANCHOR=w9:p1 HERDR_PANE_ID=w0:p0 '$S' --dry-run worker-1 codex | grep -q 'HERDR_VIEW_ANCHOR=w9:p1'"
+check "hc 터미널 안의 --here는 기준을 만들지 않음" "! env -u HERDR_VIEW_ANCHOR HC_TERMINAL_ID=t5 HERDR_PANE_ID=w0:p0 '$S' --dry-run --here commander codex | grep -q HERDR_VIEW_ANCHOR"
+V="$P/.agents/bin/herdr-view"
+mkdir -p "$WORK/hstub"
+cat >"$WORK/hstub/herdr" <<'EOF'
+#!/usr/bin/env bash
+# 가짜 herdr: 탭 w1:t1에 기준 w1:p1, VIEWS에 적힌 보기 패널(id/label/height)을 둔다.
+echo "$*" >>"$HLOG"
+panes='{"pane_id":"w1:p1","tab_id":"w1:t1"},{"pane_id":"w2:p1","tab_id":"w2:t1","label":"hc:worker-9"}'
+rects='{"pane_id":"w1:p1","rect":{"height":38}}'
+for v in $VIEWS; do IFS=/ read -r id lb h <<<"$v"
+  panes+=",{\"pane_id\":\"$id\",\"tab_id\":\"w1:t1\",\"label\":\"$lb\"}"; rects+=",{\"pane_id\":\"$id\",\"rect\":{\"height\":$h}}"; done
+case "$1 $2" in
+  "pane list") echo "{\"result\":{\"panes\":[$panes]}}" ;;
+  "pane layout") echo "{\"result\":{\"layout\":{\"panes\":[$rects]}}}" ;;
+  "pane split") echo '{"result":{"pane":{"pane_id":"w1:p9"}}}' ;;
+  *) echo '{}' ;;
+esac
+EOF
+chmod +x "$WORK/hstub/herdr"
+export HLOG="$WORK/herdr.log"
+: >"$HLOG"; PATH="$WORK/hstub:$PATH" VIEWS="" "$V" w1:p1 t7 orchestrator 2>/dev/null
+check "첫 보기 패널은 기준 오른쪽" "grep -q '^pane split w1:p1 --direction right --no-focus' '$HLOG'"
+check "보기 패널 이름과 보기 전용 접속" "grep -q '^pane rename w1:p9 hc:orchestrator' '$HLOG' && grep -q '^pane run w1:p9 hc attach --observe t7; exit' '$HLOG'"
+: >"$HLOG"; PATH="$WORK/hstub:$PATH" VIEWS="w1:p2/hc:orchestrator/10 w1:p3/hc:worker-1/19" "$V" w1:p1 t8 worker-2 2>/dev/null
+check "다음 보기 패널은 가장 높은 보기 패널 아래" "grep -q '^pane split w1:p3 --direction down' '$HLOG'"
+check "다른 탭의 보기 패널은 세지 않음" "! grep -q 'w2:p1' '$HLOG'"
+: >"$HLOG"; PATH="$WORK/hstub:$PATH" VIEWS="w1:p2/hc:worker-1/19" "$V" w1:p1 t9 worker-1 2>/dev/null
+check "같은 역할의 보기 패널이 있으면 만들지 않음" "! grep -q '^pane split' '$HLOG'"
+: >"$HLOG"; PATH="$WORK/hstub:$PATH" VIEWS="" "$V" w5:p5 t9 worker-1 2>/dev/null; rc=$?
+check "기준 패널이 없으면 실패하고 나누지 않음" "[ $rc -ne 0 ] && ! grep -q '^pane split' '$HLOG'"
+mkdir -p "$WORK/hcstub"
+printf '#!/usr/bin/env bash\ncase "$1" in run) echo "{\\"address\\":\\"t42\\"}" ;; *) echo "{\\"terminals\\":[]}" ;; esac\n' >"$WORK/hcstub/hc"
+chmod +x "$WORK/hcstub/hc"
+out="$(PATH="$WORK/hcstub:$WORK/hstub:$PATH" HLOG=/dev/null VIEWS="" HERDR_VIEW_ANCHOR=w5:p5 "$S" worker-1 codex 2>/dev/null)"; rc=$?
+check "보기 패널 실패가 세션 띄우기를 막지 않음" "[ $rc -eq 0 ] && [ '$out' = t42 ]"
+: >"$HLOG"; PATH="$WORK/hcstub:$WORK/hstub:$PATH" VIEWS="" HERDR_VIEW_ANCHOR=w1:p1 "$S" worker-1 codex >/dev/null 2>&1
+check "세션을 띄우면 보기 패널을 만든다" "grep -q '^pane run w1:p9 hc attach --observe t42; exit' '$HLOG'"
+set_env 's/^HERDR_VIEW_PANES=.*/HERDR_VIEW_PANES=0/' "$P/.agents/harness.env"
+: >"$HLOG"; PATH="$WORK/hcstub:$WORK/hstub:$PATH" VIEWS="" HERDR_VIEW_ANCHOR=w1:p1 "$S" worker-1 codex >/dev/null 2>&1
+check "HERDR_VIEW_PANES=0이면 만들지 않음" "! grep -q '^pane split' '$HLOG'"
+set_env 's/^HERDR_VIEW_PANES=.*/HERDR_VIEW_PANES=1/' "$P/.agents/harness.env"
+unset HLOG
 
 echo "== 문서"
 check "저장소 전체 링크" "python3 -I '$ROOT/core/skills/writing-project-docs/scripts/check_md_links.py' '$ROOT/README.md' '$ROOT/core' '$ROOT/docs' '$ROOT/templates' >/dev/null"

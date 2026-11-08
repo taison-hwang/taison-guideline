@@ -112,4 +112,4 @@ done
 
 sync_managed
 say "완료: $TARGET"
-say "다음: intent.md와 AGENTS.md의 '프로젝트 규칙'을 채운 뒤, herdr 패널에서 .agents/bin/herdr-session --here commander <codex|claude>"
+say "다음: intent.md와 AGENTS.md의 '프로젝트 규칙'을 채운 뒤, harness.env의 역할별 도구를 정하고, herdr 패널에서 .agents/bin/herdr-session --here commander [codex|claude]"
