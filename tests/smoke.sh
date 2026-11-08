@@ -157,6 +157,7 @@ commit_all() { git -C "$G" add -A && git -C "$G" -c user.email=t@t -c user.name=
 check "검사 명령이 없으면 막지 않고 미설정 표시" "grep -q 'send t9 \[완료\] A-02 x · 검사 미설정' '$WORK/hc.log'"
 set_env 's/^HERDR_CHECK_CMD=.*/HERDR_CHECK_CMD="echo run >>count.log; test ! -e fail.flag"/' "$P/.agents/harness.env"
 echo count.log >"$G/.gitignore"; commit_all ignore
+check "기록이 없으면 오류 없이 NONE" "[ \"\$(HERDR_ROLE=never-checked '$C' --status 2>&1)\" = NONE ]"
 git -C "$G" worktree add -q "$WORK/repo-wt" -b wt
 cd "$WORK/repo-wt"; echo x >a.txt; : >"$WORK/hc.log"
 check "worktree에 커밋 안 된 변경이 있으면 [완료]를 막음" "! '$R' '[완료] A-03 x' >/dev/null 2>&1 && ! grep -q 'A-03' '$WORK/hc.log'"
