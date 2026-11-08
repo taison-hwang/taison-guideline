@@ -131,9 +131,9 @@ Commander에게 목표를 말한다. Orchestrator가 없으면 Commander가 띄�
 ```
 
 - 첫 세션은 Commander 패널 오른쪽에, 다음부터는 보기 패널 중 가장 높은 것을 아래로 나눈다. 패널 이름은 `hc:<role>`이다.
-- 보기 전용(`hc attach --observe`)이라 입력이 세션에 가지 않는다. 세션에 직접 답해야 하면 그 패널에서 `ctrl+\`로 떨어진 뒤 `hc attach <주소>`로 붙는다.
+- 패널은 `hc attach <주소>`로 붙어 세션 크기를 패널에 맞춘다. 보기 전용(`--observe`)은 크기를 바꾸지 않아 화면이 겹쳐 깨지므로 쓰지 않는다. 패널을 클릭해 포커스를 주면 그 세션에 직접 입력할 수 있다. 떨어지려면 `ctrl+\`(패널도 닫힌다).
 - 세션이 끝나면 패널도 닫힌다. 같은 역할의 세션을 다시 쓰면(`/clear` 재사용) 패널을 새로 만들지 않는다.
-- 보기 패널을 닫아도 세션은 계속 돈다. 다시 보려면 아무 패널에서 `hc attach --observe <주소>`를 실행한다.
+- 보기 패널을 닫아도 세션은 계속 돈다. 다시 보려면 아무 패널에서 `hc attach <주소>`를 실행한다. 같은 세션에 두 곳이 붙으면 크기가 마지막에 바꾼 쪽에 맞춰져 다른 쪽 화면이 깨질 수 있다.
 - 기준은 `--here`를 실행한 herdr 패널이다. 그 패널을 닫았거나 herdr 밖에서 띄웠으면 보기 패널 없이 백그라운드로만 뜬다.
 - 화면이 작으면 `HERDR_MAX_WORKERS`를 줄이거나 `HERDR_VIEW_PANES=0`으로 끈다.
 
@@ -168,6 +168,8 @@ bin/harness sync <프로젝트>
 | `검사가 실패해 [완료]를 보내지 않았다` | `HERDR_CHECK_CMD`가 실패했다. 전체 출력은 `~/.claude/herdr/handoff/<프로젝트>/.<role>.check.log`에 있다 |
 | 편집 hook이 돌지 않는다 | `HERDR_CHECK_FILE_CMD`가 비었거나, 프로젝트의 `.claude/settings.json`·`.codex/hooks.json`에 hook이 없다. `sync`는 이 두 파일을 덮어쓰지 않으므로 `core/config/`의 내용을 직접 합친다 |
 | 보기 패널이 생기지 않는다 | Commander를 `--here`로 herdr 패널에서 띄워야 기준 패널이 생긴다. 이전 실행기로 띄운 Commander는 기준이 없으니 `bin/harness sync` 뒤 다시 띄운다. 그 패널을 닫았어도 생기지 않는다. `HERDR_VIEW_PANES=1`인지 확인한다 |
+| 보기 패널의 화면이 겹치거나 줄이 엉켜 나온다 | 보기 전용(`--observe`)으로 붙던 이전 실행기다. hc 세션은 200x120으로 그리는데 패널이 작아 깨진다. `bin/harness sync` 뒤 그 패널에서 `ctrl+\`로 떨어지고 `hc attach <주소>`로 다시 붙는다 |
+| `Transcript saving is off — inherited CLAUDE_CODE_CHILD_SESSION marker` | hc 서버를 Claude Code 안에서 띄워 그 세션의 표지가 물려졌다. 실행기가 띄울 때 지우므로 `bin/harness sync` 뒤 새로 띄운 세션에는 없다. 이미 뜬 세션은 기록이 저장되지 않으니 작업 경계에서 다시 띄운다 |
 | 패널을 닫았더니 Commander가 사라진 것 같다 | 세션은 hc 터미널에 남아 있다. `hc ls --label "project=<프로젝트 폴더 이름>"`로 찾아 `hc attach`로 붙는다 |
 | `도구를 정하지 못했다` | 도구 인자가 없고 `.agents/harness.env`의 `HERDR_<역할>_TOOL`도 비어 있다. 값을 채우거나 인자로 `codex`·`claude`를 준다. 예전 `harness.env`에는 이 줄이 없으니 위 예시를 더한다 |
 | codex가 띄운 명령이 hc 밖에서 돈다 | 실행기가 codex에 `--no-daemon`을 붙인다. 예전 실행기면 `bin/harness sync`로 갱신한다 |

@@ -251,6 +251,8 @@ echo "== 보기 패널"
 check "--here는 사용자 패널을 기준으로 넘김" "env -u HC_TERMINAL_ID HERDR_PANE_ID=w9:p1 '$S' --dry-run --here commander codex | grep -q 'HERDR_VIEW_ANCHOR=w9:p1'"
 check "자식 세션에 기준 패널 전달" "HERDR_VIEW_ANCHOR=w9:p1 HERDR_PANE_ID=w0:p0 '$S' --dry-run worker-1 codex | grep -q 'HERDR_VIEW_ANCHOR=w9:p1'"
 check "hc 터미널 안의 --here는 기준을 만들지 않음" "! env -u HERDR_VIEW_ANCHOR HC_TERMINAL_ID=t5 HERDR_PANE_ID=w0:p0 '$S' --dry-run --here commander codex | grep -q HERDR_VIEW_ANCHOR"
+check "띄울 때 부모 Claude 세션 표지와 낡은 패널 ID를 지움" "CLAUDE_CODE_CHILD_SESSION=1 '$S' --dry-run worker-1 claude | grep -q -- '-u CLAUDE_CODE_CHILD_SESSION .*-u HERDR_PANE_ID'"
+check "지운 뒤에도 자기 compact 값은 넘김" "'$S' --dry-run worker-1 claude | grep -q 'CLAUDE_CODE_AUTO_COMPACT_WINDOW='"
 V="$P/.agents/bin/herdr-view"
 mkdir -p "$WORK/hstub"
 cat >"$WORK/hstub/herdr" <<'EOF'
@@ -272,7 +274,7 @@ chmod +x "$WORK/hstub/herdr"
 export HLOG="$WORK/herdr.log"
 : >"$HLOG"; PATH="$WORK/hstub:$PATH" VIEWS="" "$V" w1:p1 t7 orchestrator 2>/dev/null
 check "첫 보기 패널은 기준 오른쪽" "grep -q '^pane split w1:p1 --direction right --no-focus' '$HLOG'"
-check "보기 패널 이름과 보기 전용 접속" "grep -q '^pane rename w1:p9 hc:orchestrator' '$HLOG' && grep -q '^pane run w1:p9 hc attach --observe t7; exit' '$HLOG'"
+check "보기 패널 이름과 크기를 맞추는 접속" "grep -q '^pane rename w1:p9 hc:orchestrator' '$HLOG' && grep -q '^pane run w1:p9 hc attach t7; exit' '$HLOG'"
 : >"$HLOG"; PATH="$WORK/hstub:$PATH" VIEWS="w1:p2/hc:orchestrator/10 w1:p3/hc:worker-1/19" "$V" w1:p1 t8 worker-2 2>/dev/null
 check "다음 보기 패널은 가장 높은 보기 패널 아래" "grep -q '^pane split w1:p3 --direction down' '$HLOG'"
 check "다른 탭의 보기 패널은 세지 않음" "! grep -q 'w2:p1' '$HLOG'"
@@ -286,7 +288,7 @@ chmod +x "$WORK/hcstub/hc"
 out="$(PATH="$WORK/hcstub:$WORK/hstub:$PATH" HLOG=/dev/null VIEWS="" HERDR_VIEW_ANCHOR=w5:p5 "$S" worker-1 codex 2>/dev/null)"; rc=$?
 check "보기 패널 실패가 세션 띄우기를 막지 않음" "[ $rc -eq 0 ] && [ '$out' = t42 ]"
 : >"$HLOG"; PATH="$WORK/hcstub:$WORK/hstub:$PATH" VIEWS="" HERDR_VIEW_ANCHOR=w1:p1 "$S" worker-1 codex >/dev/null 2>&1
-check "세션을 띄우면 보기 패널을 만든다" "grep -q '^pane run w1:p9 hc attach --observe t42; exit' '$HLOG'"
+check "세션을 띄우면 보기 패널을 만든다" "grep -q '^pane run w1:p9 hc attach t42; exit' '$HLOG'"
 set_env 's/^HERDR_VIEW_PANES=.*/HERDR_VIEW_PANES=0/' "$P/.agents/harness.env"
 : >"$HLOG"; PATH="$WORK/hcstub:$WORK/hstub:$PATH" VIEWS="" HERDR_VIEW_ANCHOR=w1:p1 "$S" worker-1 codex >/dev/null 2>&1
 check "HERDR_VIEW_PANES=0이면 만들지 않음" "! grep -q '^pane split' '$HLOG'"
