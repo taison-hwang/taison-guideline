@@ -9,6 +9,8 @@ pass=0 fail=0
 ok() { pass=$((pass + 1)); }
 no() { fail=$((fail + 1)); echo "실패: $1"; }
 check() { if eval "$2"; then ok; else no "$1"; fi; }
+# sed -i는 GNU와 BSD(macOS)의 인자가 달라 임시 파일로 바꾼다.
+set_env() { sed "$1" "$2" >"$2.tmp" && mv "$2.tmp" "$2"; }
 
 P="$WORK/demo"
 "$ROOT/bin/harness" init "$P" >/dev/null
@@ -154,16 +156,18 @@ for s in 'role=worker-1' 'project=demo' 'HERDR_ROLE=worker-1' 'HERDR_HOME=' 'bin
   check "claude 명령에 없음: $s" "printf '%s' \"\$c\" | grep -q -- '$s'"
 done
 c="$("$S" --dry-run orchestrator codex)"
-for s in 'yolo' 'dangerously-bypass-hook-trust' 'model_auto_compact_token_limit=400000' 'gpt-6.1-terra'; do
+for s in 'no-daemon' 'yolo' 'dangerously-bypass-hook-trust' 'model_auto_compact_token_limit=400000' 'gpt-6.1-terra'; do
   check "codex 명령에 없음: $s" "printf '%s' \"\$c\" | grep -q -- '$s'"
 done
-sed -i '' 's/^HERDR_AUTONOMOUS=1/HERDR_AUTONOMOUS=0/' "$P/.agents/harness.env"
+set_env 's/^HERDR_AUTONOMOUS=1/HERDR_AUTONOMOUS=0/' "$P/.agents/harness.env"
 check "자율 모드 끄면 claude 권한 우회 없음" "! '$S' --dry-run worker-1 claude | grep -q dangerously"
 check "자율 모드 끄면 codex yolo 없음" "! '$S' --dry-run worker-1 codex | grep -q yolo"
-sed -i '' 's/^HERDR_AUTONOMOUS=0/HERDR_AUTONOMOUS=1/' "$P/.agents/harness.env"
+set_env 's/^HERDR_AUTONOMOUS=0/HERDR_AUTONOMOUS=1/' "$P/.agents/harness.env"
 git -C "$P" add -A >/dev/null; git -C "$P" -c user.email=t@t -c user.name=t commit -qm init
 git -C "$P" worktree add -q docs/.worktrees/w -b w
 W="$P/docs/.worktrees/w/.agents/bin/herdr-session"
+check "--here: hc 터미널 밖이면 hc 터미널을 열고 붙는다" "env -u HC_TERMINAL_ID '$S' --dry-run --here commander codex | grep -q '^hc run --bg --json --label role=commander --label project=demo.*&& hc attach'"
+check "--here: hc 터미널 안이면 그 터미널에 라벨" "HC_TERMINAL_ID=t5 '$S' --dry-run --here commander codex | grep -q '^hc label t5 role=commander project=demo'"
 check "worktree에서도 프로젝트 이름 유지" "'$W' --dry-run worker-1 claude | grep -q 'project=demo'"
 mkdir -p "$WORK/stub"
 cat >"$WORK/stub/hc" <<'EOF'
@@ -176,9 +180,9 @@ case "$*" in
 esac
 EOF
 chmod +x "$WORK/stub/hc"
-sed -i '' 's/^HERDR_MAX_WORKERS=.*/HERDR_MAX_WORKERS=2/' "$P/.agents/harness.env"
+set_env 's/^HERDR_MAX_WORKERS=.*/HERDR_MAX_WORKERS=2/' "$P/.agents/harness.env"
 check "워커 상한 초과 거부" "! PATH='$WORK/stub:$PATH' '$S' worker-3 claude >/dev/null 2>&1"
-sed -i '' 's/^HERDR_MAX_WORKERS=.*/HERDR_MAX_WORKERS=3/' "$P/.agents/harness.env"
+set_env 's/^HERDR_MAX_WORKERS=.*/HERDR_MAX_WORKERS=3/' "$P/.agents/harness.env"
 check "Orchestrator는 워커 수에 넣지 않음" "PATH='$WORK/stub:$PATH' '$S' worker-3 claude >/dev/null 2>&1; [ \$? -ne 1 ] || ! PATH='$WORK/stub:$PATH' '$S' worker-3 claude 2>&1 | grep -q '이미'"
 
 echo "== 문서"

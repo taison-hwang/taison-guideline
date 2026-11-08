@@ -28,7 +28,7 @@ usage() {
 
   --task <내용>      첫 임무. 부팅 중인 세션에 hc send로 보내면 유실될 수 있으니 이것으로 넘긴다
   --model <모델>     기본 모델 대신 쓸 모델(예: 명세가 정해진 구현은 sonnet)
-  --here             지금 터미널(사용자가 herdr 화면에서 연 패널)에 라벨을 붙이고 그 자리에서 실행한다
+  --here             사용자가 herdr 화면에서 연 패널에서 그 자리에 실행한다. hc 터미널이 아니면 hc 터미널을 열어 실행한다
   --outlive-parent   부모 세션이 끝나도 살아 있게 한다
   --full             Claude의 기본 맥락 축소(claude.ai 커넥터·Chrome·플러그인 끔)를 하지 않는다
   --dry-run          실행하지 않고 명령만 출력한다
@@ -83,7 +83,8 @@ if [[ "$TOOL" == codex ]]; then
   else
     PERM=(--sandbox danger-full-access --ask-for-approval on-request)
   fi
-  AGENT=(codex "${PERM[@]}" -m "$MODEL" -c "model_reasoning_effort=\"$EFFORT\"" -c "model_auto_compact_token_limit=$HERDR_COMPACT_TOKENS")
+  # --no-daemon이 없으면 공유 백그라운드 서버가 명령을 실행해 hc 터미널 밖에서 돈다(hc --skill).
+  AGENT=(codex --no-daemon "${PERM[@]}" -m "$MODEL" -c "model_reasoning_effort=\"$EFFORT\"" -c "model_auto_compact_token_limit=$HERDR_COMPACT_TOKENS")
 else
   ENVS+=("CLAUDE_CODE_AUTO_COMPACT_WINDOW=$HERDR_COMPACT_TOKENS")
   AGENT=(claude)
@@ -99,11 +100,24 @@ fi
 CMD=(env "${ENVS[@]}" "${AGENT[@]}")
 
 if [[ $HERE -eq 1 ]]; then
+  # hc 터미널 안이면 그 터미널에 라벨을 붙인다. herdr 패널의 일반 셸처럼 hc 터미널이 아니면
+  # hc 터미널을 백그라운드로 열고 이 패널을 거기에 붙인다. --bg 없는 hc run은 끝날 때까지 기다렸다가
+  # 출력만 보여 주므로 대화형 화면이 나오지 않는다. 패널을 닫거나 ctrl+\로 떨어져도 세션은 남는다.
+  HERE_RUN=(hc run --bg --json --label "role=$ROLE" --label "project=$PROJECT" --cwd "$ROOT" --)
   if [[ $DRY -eq 1 ]]; then
-    echo "hc label <현재 터미널> role=$ROLE project=$PROJECT && ${CMD[*]}"
+    if [[ -n "${HC_TERMINAL_ID:-}" ]]; then
+      echo "hc label $HC_TERMINAL_ID role=$ROLE project=$PROJECT && ${CMD[*]}"
+    else
+      echo "${HERE_RUN[*]} ${CMD[*]} && hc attach <새 터미널>"
+    fi
     exit 0
   fi
-  [[ -n "${HC_TERMINAL_ID:-}" ]] || { echo "--here 는 herdr 터미널 안에서만 쓴다" >&2; exit 1; }
+  command -v hc >/dev/null || { echo "hc(herdr-core)가 없다. 설치: curl -fsSL https://releases.herdr.dev/core/install.sh | sh" >&2; exit 1; }
+  if [[ -z "${HC_TERMINAL_ID:-}" ]]; then
+    addr="$("${HERE_RUN[@]}" "${CMD[@]}" | jq -r '.address // empty')"
+    [[ -n "$addr" ]] || { echo "hc 터미널을 열지 못했다" >&2; exit 1; }
+    exec hc attach "$addr"
+  fi
   hc label "$HC_TERMINAL_ID" "role=$ROLE" "project=$PROJECT" >/dev/null
   cd "$ROOT"
   exec "${CMD[@]}"
