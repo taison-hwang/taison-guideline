@@ -6,7 +6,7 @@
 set -euo pipefail
 
 HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-MANAGED_SKILLS=(running-herdr-autopilot managing-session-context writing-project-docs)
+MANAGED_SKILLS=(running-herdr-autopilot managing-session-context writing-project-docs implementing-with-tdd)
 BEGIN='<!-- harness:begin -->'
 END='<!-- harness:end -->'
 

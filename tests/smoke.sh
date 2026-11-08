@@ -16,7 +16,7 @@ P="$WORK/demo"
 "$ROOT/bin/harness" init "$P" >/dev/null
 
 echo "== 설치"
-for f in AGENTS.md CLAUDE.md intent.md .gitignore .agents/harness.env .claude/settings.json .codex/hooks.json docs/status/work-plan.md docs/status/decisions.tsv .agents/bin/herdr-session .agents/bin/herdr-view .agents/bin/herdr-check .agents/hooks/check-edit.sh .agents/hooks/context-signal.sh .agents/skills/running-herdr-autopilot/SKILL.md .agents/skills/writing-project-docs/scripts/check_md_links.py; do
+for f in AGENTS.md CLAUDE.md intent.md .gitignore .agents/harness.env .claude/settings.json .codex/hooks.json docs/status/work-plan.md docs/status/decisions.tsv .agents/bin/herdr-session .agents/bin/herdr-view .agents/bin/herdr-check .agents/hooks/check-edit.sh .agents/hooks/context-signal.sh .agents/skills/running-herdr-autopilot/SKILL.md .agents/skills/implementing-with-tdd/SKILL.md .agents/skills/writing-project-docs/scripts/check_md_links.py; do
   check "파일 없음: $f" "[ -e '$P/$f' ]"
 done
 check "skills 링크" "[ \"\$(readlink '$P/.claude/skills')\" = ../.agents/skills ]"

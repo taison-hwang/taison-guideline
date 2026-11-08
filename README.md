@@ -9,8 +9,9 @@ herdr로 개발을 자율주행하는 기본 동작만 담은 하네스다. 사�
 | `running-herdr-autopilot`  | Commander·Orchestrator·워커 역할, 의존성·맥락 연관도 기반 배정, 서브에이전트 사용 범위 |
 | `managing-session-context` | 작업 경계의 `/clear`, 작업 중 auto-compact, 소프트 신호, compact 후 복구                |
 | `writing-project-docs`     | 방향 문서, 개발 과정 기록, 작업 계획·상태판, 문서 분할·색인                             |
+| `implementing-with-tdd`    | 실패 테스트 먼저 쓰는 TDD 절차, 뮤테이션 확인, 테스트 작성 규칙                          |
 
-그 밖에 세션 실행기·보고 명령·검사 실행기(`core/bin/`), 역할 주입·컨텍스트·보고 누락 방지·편집 직후 검사 hook(`core/hooks/`), 프로젝트 템플릿(`templates/`)이 있다. 검사를 돌리는 관문은 담지만 검사 명령 자체(린트 도구, 테스트 러너), TDD 절차, 언어별 설정은 담지 않는다. 프로젝트가 `harness.env`의 검사 명령과 전용 스킬로 더한다.
+그 밖에 세션 실행기·보고 명령·검사 실행기(`core/bin/`), 역할 주입·컨텍스트·보고 누락 방지·편집 직후 검사 hook(`core/hooks/`), 프로젝트 템플릿(`templates/`)이 있다. 검사를 돌리는 관문은 담지만 TDD 절차와 뮤테이션 확인 기준은 담지만, 검사 명령 자체(린트 도구, 테스트 러너, 뮤테이션 도구)와 언어별 설정은 담지 않는다. 프로젝트가 `harness.env`의 검사 명령, `AGENTS.md`의 "뮤테이션", 전용 스킬로 더한다.
 
 컨텍스트 정책의 근거와 검증 결과는 [docs/context-policy.md](docs/context-policy.md), 규칙별 강제 수단과 전제, 독립 검증 시험은 [docs/rules-and-enforcement.md](docs/rules-and-enforcement.md)에 있다.
 
@@ -154,7 +155,7 @@ hc kill t3                                                         # 세션 끝�
 bin/harness sync <프로젝트>
 ```
 
-스킬 3개, 실행기, hook, `AGENTS.md`의 표시 블록만 덮어쓴다. 프로젝트 전용 스킬, `harness.env`, `intent.md`, 문서는 그대로 둔다. 파일은 전역이 아니라 프로젝트 안에 설치되므로, 커밋 전에 `git diff`로 바뀐 내용을 확인한다.
+스킬 4개, 실행기, hook, `AGENTS.md`의 표시 블록만 덮어쓴다. 프로젝트 전용 스킬, `harness.env`, `intent.md`, 문서는 그대로 둔다. 파일은 전역이 아니라 프로젝트 안에 설치되므로, 커밋 전에 `git diff`로 바뀐 내용을 확인한다.
 
 ## 문제 해결
 
@@ -179,7 +180,7 @@ bin/harness sync <프로젝트>
 ```
 core/                 프로젝트에 복사되는 원본
   AGENTS.core.md      AGENTS.md 표시 블록에 들어가는 규칙과 스킬 표
-  skills/             스킬 3개
+  skills/             스킬 4개
   bin/herdr-session   세션 실행기, 세션별 모델 표의 원본
   bin/herdr-report    보고 명령
   bin/herdr-view      보기 패널(herdr 탭을 나눠 세션에 보기 전용으로 붙인다)
