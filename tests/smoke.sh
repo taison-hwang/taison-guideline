@@ -16,7 +16,7 @@ P="$WORK/demo"
 "$ROOT/bin/harness" init "$P" >/dev/null
 
 echo "== 설치"
-for f in AGENTS.md CLAUDE.md intent.md .gitignore .agents/harness.env .claude/settings.json .codex/hooks.json docs/status/work-plan.md docs/status/decisions.tsv .agents/bin/herdr-session .agents/bin/herdr-view .agents/hooks/context-signal.sh .agents/skills/running-herdr-autopilot/SKILL.md .agents/skills/writing-project-docs/scripts/check_md_links.py; do
+for f in AGENTS.md CLAUDE.md intent.md .gitignore .agents/harness.env .claude/settings.json .codex/hooks.json docs/status/work-plan.md docs/status/decisions.tsv .agents/bin/herdr-session .agents/bin/herdr-view .agents/bin/herdr-check .agents/hooks/check-edit.sh .agents/hooks/context-signal.sh .agents/skills/running-herdr-autopilot/SKILL.md .agents/skills/writing-project-docs/scripts/check_md_links.py; do
   check "파일 없음: $f" "[ -e '$P/$f' ]"
 done
 check "skills 링크" "[ \"\$(readlink '$P/.claude/skills')\" = ../.agents/skills ]"
@@ -139,6 +139,8 @@ sleep_until_next_second() { local n; n=$(date +%s); while [ "$(date +%s)" = "$n"
 sleep_until_next_second
 echo '{}' | "$TURN" start
 check "다음 턴에는 다시 막음" "echo '{}' | '$TURN' stop | jq -e .decision >/dev/null"
+G="$WORK/repo"; git init -q -b main "$G"; git -C "$G" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+cd "$G"
 "$R" "[완료] A-01 요약" >/dev/null
 check "보고가 Orchestrator로 감" "grep -q 'send t9 \\[완료\\] A-01' '$WORK/hc.log'"
 rm -f "$D/.worker-1.compacts"; echo 123456 >"$D/.worker-1.ctx"; "$R" "[진행] x" >/dev/null
@@ -147,6 +149,51 @@ check "보고하면 막지 않음" "[ -z \"\$(echo '{}' | '$TURN' stop)\" ]"
 check "Orchestrator·Commander는 막지 않음" "[ -z \"\$(echo '{}' | HERDR_ROLE=orchestrator '$TURN' stop)\" ]"
 : >"$WORK/hc.log"
 check "보고 대상 없으면 실패" "! HERDR_ROLE=orchestrator '$R' '[완료] x' >/dev/null 2>&1"
+
+echo "== 검사 관문"
+C="$P/.agents/bin/herdr-check"; E="$P/.agents/hooks/check-edit.sh"
+commit_all() { git -C "$G" add -A && git -C "$G" -c user.email=t@t -c user.name=t commit -q -m "$1"; }
+: >"$WORK/hc.log"; "$R" "[완료] A-02 x" >/dev/null 2>&1
+check "검사 명령이 없으면 막지 않고 미설정 표시" "grep -q 'send t9 \[완료\] A-02 x · 검사 미설정' '$WORK/hc.log'"
+set_env 's/^HERDR_CHECK_CMD=.*/HERDR_CHECK_CMD="echo run >>count.log; test ! -e fail.flag"/' "$P/.agents/harness.env"
+echo count.log >"$G/.gitignore"; commit_all ignore
+git -C "$G" worktree add -q "$WORK/repo-wt" -b wt
+cd "$WORK/repo-wt"; echo x >a.txt; : >"$WORK/hc.log"
+check "worktree에 커밋 안 된 변경이 있으면 [완료]를 막음" "! '$R' '[완료] A-03 x' >/dev/null 2>&1 && ! grep -q 'A-03' '$WORK/hc.log'"
+check "[진행]은 커밋 안 된 변경이 있어도 보냄" "'$R' '[진행] A-03 x' >/dev/null 2>&1 && grep -q 'A-03' '$WORK/hc.log'"
+rm -f a.txt; cd "$G"; git -C "$G" worktree remove "$WORK/repo-wt"
+echo x >"$G/a.txt"; : >"$WORK/hc.log"
+check "메인 체크아웃의 [완료]는 커밋 안 된 변경이 있어도 검사 후 보냄" "'$R' '[완료] A-03m x' >/dev/null 2>&1 && grep -q 'A-03m x · 검사 PASS' '$WORK/hc.log'"
+commit_all a; : >"$WORK/hc.log"; rm -f "$G/count.log"
+"$R" "[완료] A-04 x" >/dev/null 2>&1
+check "검사 통과하면 SHA를 붙여 보냄" "grep -q \"send t9 \\[완료\\] A-04 x · 검사 PASS \$(git -C '$G' rev-parse HEAD)\" '$WORK/hc.log'"
+touch "$G/fail.flag"; commit_all fail; : >"$WORK/hc.log"
+check "검사 실패하면 [완료]를 막음" "! '$R' '[완료] A-05 x' >/dev/null 2>&1 && ! grep -q 'A-05' '$WORK/hc.log'"
+check "실패 기록" "'$C' --status | grep -q '^FAIL '"
+git -C "$G" rm -q fail.flag; commit_all fix; rm -f "$G/count.log"
+"$C" >/dev/null 2>&1; "$R" "[완료] A-06 x" >/dev/null 2>&1
+check "같은 HEAD에서 통과한 기록이 있으면 다시 돌리지 않음" "[ \"\$(wc -l <'$G/count.log')\" -eq 1 ] && grep -q 'A-06 x · 검사 PASS' '$WORK/hc.log'"
+check "Orchestrator의 [완료]는 관문을 거치지 않음" "touch '$G/dirty.txt'; HERDR_ROLE=orchestrator '$R' '[완료] x' >/dev/null 2>&1; rm -f '$G/dirty.txt'; ! grep -q 'run' '$WORK/hc.log'"
+cd "$ROOT"
+
+echo BAD >"$G/bad.txt"; echo ok >"$G/ok.txt"
+check "빠른 검사 명령이 없으면 편집 hook은 통과" "echo '{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$G/bad.txt\"}}' | '$E'"
+set_env 's/^HERDR_CHECK_FILE_CMD=.*/HERDR_CHECK_FILE_CMD="! grep -n BAD {files}"/' "$P/.agents/harness.env"
+check "Claude 편집: 문제 없으면 통과" "echo '{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$G/ok.txt\"}}' | '$E'"
+out="$(echo "{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$G/bad.txt\"}}" | "$E" 2>&1)"; rc=$?
+check "Claude 편집: 실패하면 끝 코드 2와 출력" "[ $rc -eq 2 ] && printf '%s' \"\$out\" | grep -q 'bad.txt' && printf '%s' \"\$out\" | grep -q '1:BAD'"
+patch='*** Begin Patch\n*** Update File: bad.txt\n@@\n-x\n+BAD\n*** Delete File: gone.txt\n*** End Patch'
+out="$(printf '{"tool_name":"apply_patch","cwd":"%s","tool_input":{"command":"%s"}}' "$G" "$patch" | "$E" 2>&1)"; rc=$?
+check "Codex apply_patch: 상대 경로를 cwd 기준으로 검사" "[ $rc -eq 2 ] && printf '%s' \"\$out\" | grep -q 'bad.txt'"
+out="$(printf '{"tool_name":"apply_patch","cwd":"%s","tool_input":{"command":["apply_patch","%s"]}}' "$G" "$patch" | "$E" 2>&1)"; rc=$?
+check "Codex apply_patch: command 배열도 읽음" "[ $rc -eq 2 ]"
+check "Codex apply_patch: 문제 없는 파일은 통과" "printf '{\"tool_name\":\"apply_patch\",\"cwd\":\"%s\",\"tool_input\":{\"command\":\"*** Begin Patch\\\\n*** Add File: ok.txt\\\\n*** End Patch\"}}' '$G' | '$E'"
+check "Orchestrator 편집은 검사하지 않음" "echo '{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$G/bad.txt\"}}' | HERDR_ROLE=orchestrator '$E'"
+check "다른 도구는 검사하지 않음" "echo '{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"ls\"}}' | '$E'"
+check "hook 설정: Claude 편집 matcher" "jq -e '.hooks.PostToolUse[] | select(.matcher == \"Edit|Write|MultiEdit|NotebookEdit\")' '$P/.claude/settings.json' >/dev/null"
+check "hook 설정: Codex apply_patch matcher" "jq -e '.hooks.PostToolUse[] | select(.matcher == \"^apply_patch\$\")' '$P/.codex/hooks.json' >/dev/null"
+set_env 's/^HERDR_CHECK_CMD=.*/HERDR_CHECK_CMD=/; s/^HERDR_CHECK_FILE_CMD=.*/HERDR_CHECK_FILE_CMD=/' "$P/.agents/harness.env"
+rm -f "$D/.worker-1.check" "$D/.worker-1.check.log"
 export PATH="$oldpath"; unset HERDR_ROLE HERDR_PROJECT
 
 echo "== 실행기"

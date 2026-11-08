@@ -10,7 +10,7 @@ herdr로 개발을 자율주행하는 기본 동작만 담은 하네스다. 사�
 | `managing-session-context` | 작업 경계의 `/clear`, 작업 중 auto-compact, 소프트 신호, compact 후 복구 |
 | `writing-project-docs` | 방향 문서, 개발 과정 기록, 작업 계획·상태판, 문서 분할·색인 |
 
-그 밖에 세션 실행기와 보고 명령(`core/bin/`), 역할 주입·컨텍스트·보고 누락 방지 hook(`core/hooks/`), 프로젝트 템플릿(`templates/`)이 있다. 린트·테스트 자동화, TDD 절차, 언어별 설정은 담지 않는다. 프로젝트가 `AGENTS.md`의 검사 명령과 전용 스킬로 더한다.
+그 밖에 세션 실행기·보고 명령·검사 실행기(`core/bin/`), 역할 주입·컨텍스트·보고 누락 방지·편집 직후 검사 hook(`core/hooks/`), 프로젝트 템플릿(`templates/`)이 있다. 검사를 돌리는 관문은 담지만 검사 명령 자체(린트 도구, 테스트 러너), TDD 절차, 언어별 설정은 담지 않는다. 프로젝트가 `harness.env`의 검사 명령과 전용 스킬로 더한다.
 
 컨텍스트 정책의 근거와 검증 결과는 [docs/context-policy.md](docs/context-policy.md), 규칙별 강제 수단과 전제, 독립 검증 시험은 [docs/rules-and-enforcement.md](docs/rules-and-enforcement.md)에 있다.
 
@@ -41,6 +41,29 @@ bin/harness sync <프로젝트 경로>    # 이미 설치한 프로젝트 갱신
 - `intent.md`와 `AGENTS.md`의 "프로젝트 규칙"
 - `.agents/harness.env`: `HERDR_AUTONOMOUS=1`은 권한 확인 없이 도는 모드다. 운영 자원이나 비밀에 닿는 프로젝트는 0으로 둔다.
 - `.agents/harness.env`의 역할별 에이전트·모델(아래)
+
+#### 검사 명령
+
+워커가 고친 코드는 두 관문에서 검사한다. 명령은 프로젝트가 `.agents/harness.env`에 정한다(`AGENTS.md`의 "검사 명령"과 맞춘다).
+
+```bash
+HERDR_CHECK_CMD="npm run lint && npm run typecheck && npm test"   # 전체 검사
+HERDR_CHECK_FILE_CMD="npx eslint --no-warn-ignored {files}"        # 고친 파일만 빠르게. {files}에 목록이 들어간다
+HERDR_CHECK_TIMEOUT=900                                            # 한 번의 시간 제한(초)
+```
+
+| 관문 | 언제 | 무엇을 | 실패하면 |
+| --- | --- | --- | --- |
+| 편집 직후 (`check-edit.sh` hook) | Claude가 `Edit`·`Write`·`MultiEdit`·`NotebookEdit`, Codex가 `apply_patch`로 파일을 고칠 때마다 | `HERDR_CHECK_FILE_CMD`로 고친 파일만 | 출력 끝부분을 에이전트에게 돌려줘 그 자리에서 고치게 한다. 편집은 되돌리지 않는다 |
+| `[완료]` 보고 (`herdr-report`) | 워커가 `herdr-report "[완료] …"`를 실행할 때 | worktree면 커밋 안 된 변경이 없는지 확인하고, `HERDR_CHECK_CMD`로 전체 검사. 병합 뒤 메인 체크아웃에서 보내면 다른 세션의 변경이 섞일 수 있어 변경 확인은 건너뛰고 병합된 결과를 검사한다 | 보고를 보내지 않는다. 통과하면 보고 끝에 `검사 PASS <SHA>`를 붙인다 |
+
+- Orchestrator는 `검사 PASS <SHA>`나 `검사 미설정`이 붙지 않은 `[완료]`를 받지 않는다. 워커가 쓴 설명이 아니라 이 기록으로 통과를 판단한다.
+- 전체 검사 결과는 HEAD SHA에 묶여 기록된다. 워커가 먼저 `herdr-check`를 돌려 통과했으면 보고 때 다시 돌리지 않는다. 검사가 오래 걸리면 이렇게 나눠 돌린다.
+- `HERDR_CHECK_CMD`가 비어 있으면 막지 않고 보고에 `검사 미설정`을 붙인다. `HERDR_CHECK_FILE_CMD`가 비어 있으면 편집 hook은 아무것도 하지 않는다.
+- 테스트는 편집마다 돌지 않도록 `HERDR_CHECK_FILE_CMD`에 넣지 않는다.
+- worktree에는 `node_modules` 같은 설치물이 없을 수 있다. 검사는 고친 파일이 있는 작업 트리에서 돌므로, 검사 명령이 거기서 돌 수 있게 준비하는 것은 프로젝트 몫이다.
+- 직접 돌려 보기: `.agents/bin/herdr-check`(전체), `.agents/bin/herdr-check --files <파일>`(빠른 검사), `.agents/bin/herdr-check --status`(지금 HEAD의 기록).
+- Codex의 편집 hook은 hook 신뢰가 필요하다. 자율 모드(`HERDR_AUTONOMOUS=1`)는 실행기가 신뢰 확인을 건너뛰고, 아니면 Codex에서 `/hooks`로 한 번 신뢰한다.
 
 #### 역할별 에이전트·모델
 
@@ -141,6 +164,9 @@ bin/harness sync <프로젝트>
 | `hc(herdr-core)가 없다` | `hc`가 설치되지 않았거나 PATH에 없다. 위 설치 명령을 실행하고 `hc --version`으로 확인한다 |
 | `command not found: hc` | 위와 같다. 설치 위치 `~/.local/bin`을 PATH에 넣는다 |
 | `--here`로 띄웠는데 화면이 멈춘 채 아무것도 안 나온다 | `--bg` 없는 `hc run`으로 띄우던 이전 실행기다(끝날 때까지 기다렸다가 출력만 보여 준다). `bin/harness sync`로 갱신한 뒤 다시 띄운다. 이미 뜬 세션은 `hc attach <주소>`로 붙거나 `hc kill <주소>`로 끝낸다 |
+| `커밋 안 된 변경이 있어 [완료]를 보내지 않았다` | 워커가 커밋하지 않았거나 작업 트리 밖에서 보고했다. 작업한 worktree에서 커밋한 뒤 다시 보낸다 |
+| `검사가 실패해 [완료]를 보내지 않았다` | `HERDR_CHECK_CMD`가 실패했다. 전체 출력은 `~/.claude/herdr/handoff/<프로젝트>/.<role>.check.log`에 있다 |
+| 편집 hook이 돌지 않는다 | `HERDR_CHECK_FILE_CMD`가 비었거나, 프로젝트의 `.claude/settings.json`·`.codex/hooks.json`에 hook이 없다. `sync`는 이 두 파일을 덮어쓰지 않으므로 `core/config/`의 내용을 직접 합친다 |
 | 보기 패널이 생기지 않는다 | Commander를 `--here`로 herdr 패널에서 띄워야 기준 패널이 생긴다. 이전 실행기로 띄운 Commander는 기준이 없으니 `bin/harness sync` 뒤 다시 띄운다. 그 패널을 닫았어도 생기지 않는다. `HERDR_VIEW_PANES=1`인지 확인한다 |
 | 패널을 닫았더니 Commander가 사라진 것 같다 | 세션은 hc 터미널에 남아 있다. `hc ls --label "project=<프로젝트 폴더 이름>"`로 찾아 `hc attach`로 붙는다 |
 | `도구를 정하지 못했다` | 도구 인자가 없고 `.agents/harness.env`의 `HERDR_<역할>_TOOL`도 비어 있다. 값을 채우거나 인자로 `codex`·`claude`를 준다. 예전 `harness.env`에는 이 줄이 없으니 위 예시를 더한다 |
@@ -155,7 +181,8 @@ core/                 프로젝트에 복사되는 원본
   bin/herdr-session   세션 실행기, 세션별 모델 표의 원본
   bin/herdr-report    보고 명령
   bin/herdr-view      보기 패널(herdr 탭을 나눠 세션에 보기 전용으로 붙인다)
-  hooks/              역할 주입·compact 복구, 소프트 신호, compact 직전 스냅샷, 보고 누락 방지
+  bin/herdr-check     검사 실행기(전체 검사·빠른 파일 검사, HEAD별 결과 기록)
+  hooks/              역할 주입·compact 복구, 소프트 신호, compact 직전 스냅샷, 보고 누락 방지, 편집 직후 검사
   config/             Claude·Codex hook 설정
 templates/            init 때 한 번만 넣는 파일
 bin/harness           init, sync
