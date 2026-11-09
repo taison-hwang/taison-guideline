@@ -325,6 +325,91 @@ fi
 set_env 's/^HERDR_CHECK_CMD=.*/HERDR_CHECK_CMD=/' "$P/.agents/harness.env"
 cd "$ROOT"; unset HERDR_ROLE HERDR_PROJECT
 
+echo "== 공용 검사 대기열"
+export HERDR_HEAVY_DIR="$WORK/heavy" HERDR_HEAVY_POLL=0.1 HERDR_PROJECT=demo
+Q="$P/.agents/bin/herdr-queue"; ORD="$WORK/order.log"; : >"$ORD"
+wait_for() { local i; for i in $(seq 1 150); do grep -q "$1" "$2" 2>/dev/null && return 0; sleep 0.2; done; return 1; }
+check "빈 대기열" "[ \"\$('$Q' ahead)\" = 0 ] && '$Q' | grep -q '대기열이 비었다'"
+"$Q" run --role a --sha aaa -- bash -c "echo a-start >>'$ORD'; sleep 1.5; echo a-end >>'$ORD'" &
+wait_for a-start "$ORD"
+"$Q" run --role b --sha bbb -- bash -c "echo b-start >>'$ORD'" 2>"$WORK/qb.err" &
+sleep 0.5
+check "대기열 표에 실행과 대기" "'$Q' | grep -E '^- +실행 +demo/a' >/dev/null && '$Q' | grep -E '^1 +대기 +demo/b' >/dev/null && [ \"\$('$Q' ahead)\" = 2 ]"
+wait
+check "무거운 검사는 하나씩" "[ \"\$(tr '\n' ' ' <'$ORD')\" = 'a-start a-end b-start ' ]"
+check "기다리는 동안 순번과 앞 검사를 알림" "grep -q '1번째로 기다린다 · 앞: demo/a 실행' '$WORK/qb.err'"
+: >"$ORD"
+"$Q" run --role h -- bash -c "echo h >>'$ORD'; sleep 1.5" & wait_for '^h' "$ORD"
+"$Q" run --role n1 -- bash -c "echo n1 >>'$ORD'" 2>/dev/null & sleep 0.3
+"$Q" run --role n2 -- bash -c "echo n2 >>'$ORD'" 2>/dev/null & sleep 0.3
+check "급함 표시" "'$Q' urgent n2 | grep -q '1건을 맨 앞으로'"
+wait
+check "급한 검사가 먼저 들어온 검사를 앞지름" "[ \"\$(tr '\n' ' ' <'$ORD')\" = 'h n2 n1 ' ]"
+"$Q" urgent u1 >/dev/null
+check "대기 중인 검사가 없으면 다음 검사에 급함 예약" "'$Q' | grep -q '다음 검사 급함 예약: demo/u1'"
+: >"$ORD"
+"$Q" run --role h -- bash -c "echo h >>'$ORD'; sleep 1.5" & wait_for '^h' "$ORD"
+"$Q" run --role n1 -- bash -c "echo n1 >>'$ORD'" 2>/dev/null & sleep 0.3
+"$Q" run --role u1 -- bash -c "echo u1 >>'$ORD'" 2>/dev/null & sleep 0.3
+wait
+check "예약한 역할의 다음 검사는 맨 앞에 섬" "[ \"\$(tr '\n' ' ' <'$ORD')\" = 'h u1 n1 ' ]"
+check "예약은 한 번 쓰면 없어짐" "! '$Q' | grep -q '급함 예약'"
+mkdir -p "$HERDR_HEAVY_DIR/tickets"
+printf '{"id":"dead","project":"x","role":"r","sha":"","pid":999999,"prio":5,"created":1,"state":"run","started":1}' >"$HERDR_HEAVY_DIR/tickets/dead.json"
+check "죽은 프로세스의 자리는 치움" "timeout 10 '$Q' run --role c -- true 2>/dev/null && [ ! -e '$HERDR_HEAVY_DIR/tickets/dead.json' ]"
+rm -f "$HERDR_HEAVY_DIR/tickets/dead.json" # 위가 실패해도 뒤 검사가 멈추지 않게
+"$Q" run --role h -- sleep 2 & sleep 0.3
+check "시간 제한은 실행 시간에만(대기는 세지 않음)" "'$Q' run --role t --timeout 1 --wait-file '$WORK/qw' -- sleep 0.2 2>/dev/null && [ \"\$(cat '$WORK/qw')\" -ge 1 ]"
+wait
+"$Q" run --role k --timeout 1 -- bash -c "sleep 30 & echo \$! >'$WORK/qk.pid'; wait" 2>"$WORK/qk.err"; rc=$?
+check "시간 초과면 124와 함께 프로세스 묶음째 끝냄" "[ $rc -eq 124 ] && sleep 0.5 && ! kill -0 \$(cat '$WORK/qk.pid') 2>/dev/null && grep -q '대기 시간은 세지 않았다' '$WORK/qk.err'"
+HERDR_HEAVY_MAX_LOAD=0.0001 "$Q" run --role g -- true 2>"$WORK/qg.err" & gpid=$!
+wait_for '시작을 미룬다' "$WORK/qg.err"
+check "시작 가드를 넘지 못하면 자리를 쥐고 기다림" "grep -q '1분 부하' '$WORK/qg.err' && '$Q' | grep -qE '실행 +demo/g'"
+kill "$gpid"; wait "$gpid" 2>/dev/null
+check "중단되면 자리를 내놓음" "[ \"\$('$Q' ahead)\" = 0 ]"
+
+echo "== 가벼운 검사와 무거운 검사"
+export HERDR_ROLE=worker-8; cd "$F"; rm -f count.log "$D/.worker-8.check"
+set_env 's/^HERDR_CHECK_CMD=.*/HERDR_CHECK_CMD="echo light >>count.log"/; s/^HERDR_CHECK_HEAVY_CMD=.*/HERDR_CHECK_HEAVY_CMD="echo heavy >>count.log"/' "$P/.agents/harness.env"
+echo h1 >h1.txt; fcommit heavy1; "$C" >/dev/null 2>&1
+check "가벼운 단계 다음 무거운 단계" "[ \"\$(tr '\n' ' ' <count.log)\" = 'light heavy ' ]"
+check "검사 기록에 대기열 시간" "tail -n 1 '$D/checks.tsv' | awk -F'\t' 'NF == 8 && \$6 == \"PASS\" && \$8 ~ /^[0-9]+\$/' | grep -q ."
+set_env 's/^HERDR_CHECK_CMD=.*/HERDR_CHECK_CMD="echo light >>count.log; false"/' "$P/.agents/harness.env"
+rm -f count.log; echo h2 >h2.txt; fcommit heavy2
+check "가벼운 단계가 실패하면 무거운 단계는 돌지 않음" "! '$C' >/dev/null 2>&1 && [ \"\$(tr '\n' ' ' <count.log)\" = 'light ' ]"
+set_env 's/^HERDR_CHECK_CMD=.*/HERDR_CHECK_CMD=/; s/^HERDR_CHECK_HEAVY_CMD=.*/HERDR_CHECK_HEAVY_CMD="sleep 0.3"/; s/^HERDR_CHECK_TIMEOUT=.*/HERDR_CHECK_TIMEOUT=2/' "$P/.agents/harness.env"
+"$Q" run --role other -- sleep 3 & sleep 0.3
+echo h3 >h3.txt; fcommit heavy3
+check "무거운 단계만 있어도 검사, 대기열 대기는 시간 제한·실행 시간에 넣지 않음" "[ \"\$('$C' --status)\" = NONE ] && '$C' >/dev/null 2>&1 && tail -n 1 '$D/checks.tsv' | awk -F'\t' '\$6 == \"PASS\" && \$8 >= 2 && \$7 < 2' | grep -q ."
+wait
+set_env 's/^HERDR_CHECK_HEAVY_CMD=.*/HERDR_CHECK_HEAVY_CMD=/; s/^HERDR_CHECK_TIMEOUT=.*/HERDR_CHECK_TIMEOUT=3600/' "$P/.agents/harness.env"
+
+echo "== 뒤에서 도는 검사와 쌓기"
+export HERDR_ROLE=worker-9 HC_TERMINAL_ID=t77 XDG_CACHE_HOME="$WORK/cache"; oldpath="$PATH"; export PATH="$WORK/stub2:$PATH"
+R="$P/.agents/bin/herdr-report"
+set_env 's/^HERDR_CHECK_CMD=.*/HERDR_CHECK_CMD="sleep 1; test ! -e fail.flag"/' "$P/.agents/harness.env"
+git -C "$F" worktree add -q "$WORK/bgwt" -b stack; cd "$WORK/bgwt"
+fcommit_wt() { git add -A && git -c user.email=t@t -c user.name=t commit -q -m "$1"; }
+echo s0 >s0.txt; fcommit_wt s0; "$R" --bg "[완료] S-00 x" >/dev/null 2>&1; wait_for "S-00 x · 검사 PASS" "$WORK/hc.log"
+echo s1 >s1.txt; fcommit_wt s1; s1="$(git rev-parse HEAD)"
+# 검사용 worktree를 다시 쓸 때도 보고한 SHA를 검사하는지 보려고, 뒤 검사가 시작하기 전에 위 커밋을 쌓는다
+(flock 9; sleep 1.5) 9>"$XDG_CACHE_HOME/herdr/check/demo/worker-9.lock" & sleep 0.2
+: >"$WORK/hc.log"; out="$("$R" --bg "[완료] S-01 x" 2>&1)"
+check "--bg는 곧바로 [진행]과 예상 시간을 보냄" "grep -q \"send t9 \\[진행\\] S-01 커밋 ${s1:0:12} 검사 중(뒤에서) 예상 최대 .*대기열\" '$WORK/hc.log' && printf '%s' \"\$out\" | grep -q '뒤에서 돌린다'"
+touch fail.flag; fcommit_wt s2-stacked; s2="$(git rev-parse HEAD)"
+wait_for "S-01 x · 검사 PASS" "$WORK/hc.log"
+check "위에 쌓아도 뒤 검사는 보고한 SHA를 검사해 [완료]를 보냄" "grep -q \"send t9 \\[완료\\] S-01 x · 검사 PASS $s1\" '$WORK/hc.log'"
+: >"$WORK/hc.log"; "$R" --bg "[완료] S-02 x" >/dev/null 2>&1
+wait_for "S-02 커밋 ${s2:0:12} 검사 FAIL" "$WORK/hc.log"
+check "뒤 검사가 실패하면 이 세션에 알리고 [완료]는 보내지 않음" "grep -q 'send t77 \\[검사 FAIL\\] S-02 커밋 ${s2:0:12}' '$WORK/hc.log' && grep -q 'send t9 \\[진행\\] S-02 커밋 ${s2:0:12} 검사 FAIL' '$WORK/hc.log' && ! grep -q '\\[완료\\] S-02' '$WORK/hc.log'"
+check "실패 로그는 SHA별로 남김" "[ -e '$D/.worker-9.check-${s2:0:12}.log' ]"
+check "--bg는 [완료]에만" "! '$R' --bg '[진행] S-03 x' >/dev/null 2>&1"
+git rm -q fail.flag; fcommit_wt s3; "$P/.agents/bin/herdr-check" >/dev/null 2>&1; : >"$WORK/hc.log"
+check "이미 통과한 SHA면 --bg도 바로 [완료]" "'$R' --bg '[완료] S-03 x' >/dev/null 2>&1 && grep -q '\\[완료\\] S-03 x · 검사 PASS' '$WORK/hc.log' && ! grep -q '\\[진행\\] S-03' '$WORK/hc.log'"
+set_env 's/^HERDR_CHECK_CMD=.*/HERDR_CHECK_CMD=/' "$P/.agents/harness.env"
+cd "$ROOT"; export PATH="$oldpath"; unset HERDR_ROLE HERDR_PROJECT HC_TERMINAL_ID XDG_CACHE_HOME HERDR_HEAVY_DIR HERDR_HEAVY_POLL
+
 echo "== 받은 지시와 판정 기록"
 TURN="$P/.agents/hooks/worker-turn.sh"; R="$P/.agents/bin/herdr-report"
 rm -f "$D/received.tsv"
@@ -345,13 +430,14 @@ printf '%s\tx\t%s\ts\t%s\tB-01\t%s\t%s\n' 900 verifier-1 완료 '' '' 1000 worke
 sed -i.bak 's/^3000\tx\tworker-2\ts\t완료\tB-01/3000\tx\tworker-2\ts\t완료\tC-01/' "$FL/reports.tsv" && rm -f "$FL/reports.tsv.bak"
 printf 'epoch\ttime\trole\tsession_id\ttag\ttask\n400\tx\tworker-1\ts\t배정\tB-01\n2000\tx\tworker-1\ts\t병합\tB-01\n3100\tx\tworker-3\ts\t배정\tD-01\n3300\tx\tworker-3\ts\t병합\tD-01\n' >"$FL/received.tsv"
 printf '3200\tx\tworker-3\ts\t완료\tD-01\t\t\n' >>"$FL/reports.tsv"
-printf 'epoch\ttime\trole\tsession_id\tsha\tresult\tseconds\n700\tx\tworker-1\ts\tsha1\tPASS\t300\n1400\tx\tworker-1\ts\tsha2\tPASS\t100\n2400\tx\tworker-1\ts\tsha3\tINHERIT\t0\n2900\tx\tworker-2\ts\tsha9\tFAIL\t50\n' >"$FL/checks.tsv"
+printf 'epoch\ttime\trole\tsession_id\tsha\tresult\tseconds\tqueue_s\n700\tx\tworker-1\ts\tsha1\tPASS\t300\t600\n1400\tx\tworker-1\ts\tsha2\tPASS\t100\n2400\tx\tworker-1\ts\tsha3\tINHERIT\t0\n2900\tx\tworker-2\ts\tsha9\tFAIL\t50\n' >"$FL/checks.tsv"
 check "작업별: 작업·관문 대기·병합 시간, 검사, 판정" "'$FLOW' --project flow --tsv | grep -qxF \"\$(printf 'B-01\t600\t1000\t600\t3\t400\tISSUES>PASS')\""
 check "병합 지시 뒤 완료가 없으면 병합 칸은 비움" "'$FLOW' --project flow --tsv | grep -qxF \"\$(printf 'D-01\t100\t100\t\t0\t0\t')\""
 check "배정 기록이 없으면 그 칸은 비움" "'$FLOW' --project flow --tsv | grep -qxF \"\$(printf 'C-01\t\t\t\t1\t50\t')\""
 ftbl="$("$FLOW" --project flow)"
 check "표에 관문 대기 합계" "printf '%s' \"\$ftbl\" | grep -q '관문 대기 합계 18m20s'"
 check "역할별 검사 요약(이어받음 포함)" "printf '%s' \"\$ftbl\" | grep -E '^worker-1 +3 +2 +0 +1 ' >/dev/null"
+check "역할별 대기열 대기 시간(예전 기록은 0)" "printf '%s' \"\$ftbl\" | grep -E '^worker-1 .* 10m00s\$' >/dev/null && printf '%s' \"\$ftbl\" | grep -E '^worker-2 .* 0s\$' >/dev/null"
 check "기록이 없으면 실패" "! '$FLOW' --project nothing >/dev/null 2>&1"
 
 echo "== 검증자 정원"
@@ -482,6 +568,10 @@ set_env 's/^HERDR_VIEW_PANES=.*/HERDR_VIEW_PANES=1/' "$P/.agents/harness.env"
 unset HLOG
 
 echo "== 문서"
+W_REF="$P/.agents/skills/running-herdr-autopilot/references/worker.md"; O_REF2="$P/.agents/skills/running-herdr-autopilot/references/orchestrator.md"
+check "워커: 뒤 검사와 쌓기, 보고한 SHA까지만 병합" "grep -q 'herdr-report --bg' '$W_REF' && grep -q '쌓은 작업이 있을 때 병합' '$W_REF' && grep -q '검사 중인 커밋은 amend' '$W_REF'"
+check "워커: 무거운 명령은 대기열 아래서" "grep -q 'herdr-queue run --role' '$W_REF'"
+check "Orchestrator: 대기열 순번으로 만료, 급함은 임계 경로만" "grep -q 'herdr-queue urgent' '$O_REF2' && grep -q '임계 경로에만 쓴다' '$O_REF2'"
 check "저장소 전체 링크" "python3 -I '$ROOT/core/skills/writing-project-docs/scripts/check_md_links.py' '$ROOT/README.md' '$ROOT/core' '$ROOT/docs' '$ROOT/templates' >/dev/null"
 check "설치된 docs 색인" "python3 -I '$ROOT/core/skills/writing-project-docs/scripts/check_md_links.py' '$P/docs' >/dev/null"
 

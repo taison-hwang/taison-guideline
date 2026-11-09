@@ -48,9 +48,10 @@ bin/harness sync <프로젝트 경로>    # 이미 설치한 프로젝트 갱신
 워커가 고친 코드는 두 관문에서 검사한다. 명령은 프로젝트가 `.agents/harness.env`에 정한다(`AGENTS.md`의 "검사 명령"과 맞춘다).
 
 ```bash
-HERDR_CHECK_CMD="npm run lint && npm run typecheck && npm test"   # 전체 검사
+HERDR_CHECK_CMD="npm run lint && npm run typecheck"               # 전체 검사의 가벼운 단계(잠금 없음)
+HERDR_CHECK_HEAVY_CMD="npm test && npm run e2e"                    # 무거운 단계. 공용 대기열 아래서 돈다(비우면 없음)
 HERDR_CHECK_FILE_CMD="npx eslint --no-warn-ignored {files}"        # 고친 파일만 빠르게. {files}에 목록이 들어간다
-HERDR_CHECK_TIMEOUT=3600                                           # 한 번의 시간 제한(초). 정상 실행의 가장 긴 시간보다 넉넉하게
+HERDR_CHECK_TIMEOUT=3600                                           # 실행 시간 제한(초). 대기열 대기는 세지 않는다. 넉넉하게
 HERDR_CHECK_SKIP_PATHS="docs/* *.md"                               # 이것만 바뀌었으면 앞 PASS를 이어받는다(비우면 안 함)
 ```
 
@@ -61,8 +62,9 @@ HERDR_CHECK_SKIP_PATHS="docs/* *.md"                               # 이것만 �
 
 - Orchestrator는 `검사 PASS <SHA>`나 `검사 미설정`이 붙지 않은 `[완료]`를 받지 않는다. 워커가 쓴 설명이 아니라 이 기록으로 통과를 판단한다.
 - 마지막 PASS 이후 바뀐 파일이 모두 `HERDR_CHECK_SKIP_PATHS`(glob, `*`는 `/`도 넘는다)에 맞으면 검사를 다시 돌리지 않고 그 PASS를 이어받는다. 보고에는 `검사 PASS <SHA> 이어받음 <앞 SHA>`로 붙는다. 파일 이동은 옮기기 전 경로도 보므로 코드를 문서 폴더로 옮겨도 이어받지 않는다. 검사가 그 파일을 읽으면(문서 링크 검사 등) 넣지 않는다.
-- 시간 제한은 정상 실행의 가장 긴 시간보다 넉넉하게 둔다. 넘기면 FAIL로 끊기고, 지난 PASS 중 가장 긴 검사 시간을 함께 알려 준다.
-- 전체 검사 결과는 HEAD SHA에 묶여 기록된다. 워커가 먼저 `herdr-check`를 돌려 통과했으면 보고 때 다시 돌리지 않는다. 검사가 오래 걸리면 이렇게 나눠 돌린다.
+- 시간 제한은 정상 실행의 가장 긴 시간보다 넉넉하게 둔다. 두 단계의 실행 시간에만 걸고 대기열에서 기다린 시간은 세지 않는다. 넘기면 FAIL로 끊기고, 지난 PASS 중 가장 긴 검사 시간을 함께 알려 준다.
+- 무거운 단계는 이 기계의 모든 프로젝트가 함께 쓰는 대기열(`herdr-queue`) 아래서 돈다. 아래 "공용 검사 대기열"을 본다.
+- 전체 검사 결과는 HEAD SHA에 묶여 기록된다. 워커가 먼저 `herdr-check`를 돌려 통과했으면 보고 때 다시 돌리지 않는다. 검사가 오래 걸리면 `herdr-report --bg`로 뒤에서 돌린다(아래 "뒤에서 도는 검사와 쌓기").
 - `HERDR_CHECK_CMD`가 비어 있으면 막지 않고 보고에 `검사 미설정`을 붙인다. `HERDR_CHECK_FILE_CMD`가 비어 있으면 편집 hook은 아무것도 하지 않는다.
 - 테스트는 편집마다 돌지 않도록 `HERDR_CHECK_FILE_CMD`에 넣지 않는다.
 - worktree에는 `node_modules` 같은 설치물이 없을 수 있다. 검사는 고친 파일이 있는 작업 트리에서 돌므로, 검사 명령이 거기서 돌 수 있게 준비하는 것은 프로젝트 몫이다.
@@ -182,7 +184,32 @@ Commander에게 목표를 말한다. Orchestrator가 없으면 Commander가 띄�
 | 관문 대기 | 첫 `[완료]`부터 `[병합]`을 받을 때까지(검사·독립 검증·병합 순서) |
 | 병합 | `[병합]`을 받고 그 뒤 마지막 `[완료]`까지 |
 
-기록은 같은 폴더의 `received.tsv`(worker-turn hook이 `[배정]`·`[병합]`·`[검증]`을 받은 시각), `reports.tsv`(`[판정]`은 결과와 SHA), `checks.tsv`(`herdr-check`의 시작·걸린 시간·결과, 이어받음은 `INHERIT`)다. 검사는 보고에 적힌 SHA로 작업에 붙인다. 검사 시간에는 프로젝트 검사 명령 안의 잠금 대기가 들어 있다.
+기록은 같은 폴더의 `received.tsv`(worker-turn hook이 `[배정]`·`[병합]`·`[검증]`을 받은 시각), `reports.tsv`(`[판정]`은 결과와 SHA), `checks.tsv`(`herdr-check`의 결과·실행 시간·공용 대기열에서 기다린 시간, 이어받음은 `INHERIT`)다. 검사는 보고에 적힌 SHA로 작업에 붙인다. 역할별 요약의 '대기열'은 공용 대기열에서 기다린 시간이고, 프로젝트 검사 명령 안에서 직접 잡는 잠금의 대기는 검사 시간에 들어 있다.
+
+### 공용 검사 대기열
+
+테스트·e2e처럼 무거운 검사가 겹치면 같은 기계의 세션이 메모리 부족으로 죽는다. `HERDR_CHECK_HEAVY_CMD`는 이 기계의 모든 프로젝트가 함께 쓰는 대기열(`~/.claude/herdr/heavy`) 아래서 돈다. 린트·타입 검사(`HERDR_CHECK_CMD`)는 기다리지 않는다.
+
+```bash
+.agents/bin/herdr-queue                    # 실행·대기 중인 검사, 순번, 경과
+.agents/bin/herdr-queue urgent worker-3    # 그 역할의 검사를 맨 앞으로(대기 중이 아니면 다음 검사 한 번)
+.agents/bin/herdr-queue run --role worker-1 -- make test-int   # 무거운 명령을 대기열 아래서 직접 돌린다
+```
+
+- 동시에 도는 수는 `HERDR_HEAVY_SLOTS`(기본 1)다. 순서는 급함, 들어온 순이다. 프로세스가 죽은 자리는 다음 검사가 치운다.
+- 시작 가드: 자리를 얻은 뒤에도 가용 메모리가 `HERDR_HEAVY_MIN_MEM_GB` 이상, 1분 부하가 `HERDR_HEAVY_MAX_LOAD` 미만이 될 때까지 기다린다(0이면 보지 않음).
+- 기다리는 동안 순번과 앞 검사를 알린다. 시간 제한은 실행에만 걸리므로 대기열 뒤에 있다는 이유로 실패하지 않는다. 시간 초과나 중단 때는 검사 프로세스 묶음째 끝내 고아 검사가 남지 않는다.
+- 급함은 Orchestrator가 임계 경로의 검사에만 쓴다.
+
+#### 뒤에서 도는 검사와 쌓기
+
+워커는 `herdr-report --bg "[완료] A-01 …"`로 검사를 뒤에서 돌린다. 지금 HEAD를 역할별 검사용 worktree(`~/.cache/herdr/check/<프로젝트>/<역할>`, 설치물 캐시가 남도록 재사용)에서 검사한다.
+
+1. 곧바로 `[진행] A-01 커밋 <SHA> 검사 중(뒤에서) 예상 최대 13m(지난 PASS 8회 중) · 대기열 2건`이 Orchestrator에 간다. Orchestrator는 이때부터 그 SHA로 독립 검증을 배정할 수 있다.
+2. 그동안 워커는 같은 묶음의 다음 작업을 그 커밋 위에 쌓는다. 검사 중인 커밋은 바꾸지 않는다.
+3. PASS면 그 SHA로 `[완료] … · 검사 PASS <SHA>`가 자동으로 간다. FAIL이면 `[완료]`는 가지 않고, 워커 세션에 `[검사 FAIL]`과 로그 경로가, Orchestrator에 "고치는 중"이 간다.
+
+병합은 여전히 커밋마다 검사 PASS와 판정 PASS가 있어야 하고, 워커는 `[병합]`에 적힌 SHA까지만 병합한다. 쌓은 작업을 옮기는 순서는 `worker.md`에 있다.
 
 ### 떠나기, 다시 붙기, 끝내기
 
@@ -231,9 +258,10 @@ core/                 프로젝트에 복사되는 원본
   bin/herdr-session   세션 실행기, 세션별 모델 표의 원본
   bin/herdr-report    보고 명령
   bin/herdr-view      보기 패널(herdr 탭을 나눠 세션에 보기 전용으로 붙인다)
-  bin/herdr-check     검사 실행기(전체 검사·빠른 파일 검사, HEAD별 결과 기록)
+  bin/herdr-check     검사 실행기(가벼운·무거운 단계, 빠른 파일 검사, SHA별 결과 기록)
   bin/herdr-usage     토큰 사용량 집계(세션 장부·보고 경계 + transcript)
   bin/herdr-flow      작업 흐름과 대기 측정(받은 지시·보고·검사 기록)
+  bin/herdr-queue     무거운 검사의 공용 대기열(자리·급함·시작 가드)
   hooks/              역할 주입·compact 복구, 소프트 신호, compact 직전 스냅샷, 보고 누락 방지, 편집 직후 검사
   config/             Claude·Codex hook 설정, 사용량 단가표
 templates/            init 때 한 번만 넣는 파일
