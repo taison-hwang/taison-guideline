@@ -201,7 +201,7 @@ hc kill t3                                                         # 세션 끝�
 bin/harness sync <프로젝트>
 ```
 
-스킬 4개, 실행기, hook, 단가표, `AGENTS.md`의 표시 블록만 덮어쓴다. 프로젝트 전용 스킬, `harness.env`, `intent.md`, 문서는 그대로 둔다. 파일은 전역이 아니라 프로젝트 안에 설치되므로, 커밋 전에 `git diff`로 바뀐 내용을 확인한다.
+스킬 4개, 실행기, hook, 단가표, `AGENTS.md`의 표시 블록만 덮어쓴다. 프로젝트 전용 스킬, `harness.env`, `intent.md`, 문서는 그대로 둔다. 다만 하네스에 새 설정 칸이 생기면 `harness.env` 끝에 설명과 기본값으로 붙이고 그 이름을 알린다. 이미 있는 칸의 값은 바꾸지 않으므로, 새 기본값(예: 검사 시간 제한)을 따를지는 프로젝트가 정한다. 파일은 전역이 아니라 프로젝트 안에 설치되므로, 커밋 전에 `git diff`로 바뀐 내용을 확인한다.
 
 ## 문제 해결
 
@@ -219,7 +219,7 @@ bin/harness sync <프로젝트>
 | `Transcript saving is off — inherited CLAUDE_CODE_CHILD_SESSION marker` | hc 서버를 Claude Code 안에서 띄워 그 세션의 표지가 물려졌다. 실행기가 띄울 때 지우므로 `bin/harness sync` 뒤 새로 띄운 세션에는 없다. 이미 뜬 세션은 기록이 저장되지 않으니 작업 경계에서 다시 띄운다                    |
 | Orchestrator를 껐더니 워커·검증자도 함께 꺼졌다                          | hc는 `--outlive-parent` 없이 띄운 터미널을 부모와 함께 끝낸다. 지금 실행기는 항상 붙이므로 `bin/harness sync` 뒤 새로 띄운 세션에는 없다. 이전 실행기로 띄운 워커가 남아 있으면 Orchestrator를 끄기 전에 작업 경계에서 워커를 다시 띄운다 |
 | 패널을 닫았더니 Commander가 사라진 것 같다                                 | 세션은 hc 터미널에 남아 있다. `hc ls --label "project=<프로젝트 폴더 이름>"`로 찾아 `hc attach`로 붙는다                                                                                                               |
-| `도구를 정하지 못했다`                                                   | 도구 인자가 없고 `.agents/harness.env`의 `HERDR_<역할>_TOOL`도 비어 있다. 값을 채우거나 인자로 `codex`·`claude`를 준다. 예전 `harness.env`에는 이 줄이 없으니 위 예시를 더한다                                  |
+| `도구를 정하지 못했다`                                                   | 도구 인자가 없고 `.agents/harness.env`의 `HERDR_<역할>_TOOL`도 비어 있다. 값을 채우거나 인자로 `codex`·`claude`를 준다. 예전 `harness.env`에 이 줄이 없으면 `harness sync`가 끝에 빈 칸으로 붙인다                                  |
 | codex가 띄운 명령이 hc 밖에서 돈다                                         | 실행기가 codex에 `--no-daemon`을 붙인다. 예전 실행기면 `bin/harness sync`로 갱신한다                                                                                                                                   |
 
 ## 구조

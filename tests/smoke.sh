@@ -77,6 +77,18 @@ check "블록 중복 없음" "[ \"\$(grep -c '하네스 기본 규칙' '$P/AGENT
 check "환경 값 유지" "grep -q 'HERDR_MAX_WORKERS=9' '$P/.agents/harness.env'"
 check "전용 스킬 유지" "[ -f '$P/.agents/skills/my-own/SKILL.md' ]"
 
+echo "== 새 설정 칸은 sync가 끝에 추가"
+E="$P/.agents/harness.env"
+set_env '/^HERDR_MAX_VERIFIERS=/d; /^HERDR_CHECK_SKIP_PATHS=/d; s/^HERDR_CHECK_TIMEOUT=.*/HERDR_CHECK_TIMEOUT=1800/' "$E"
+out="$("$ROOT/bin/harness" sync "$P")"
+"$ROOT/bin/harness" sync "$P" >/dev/null
+check "빠진 설정을 기본값으로 추가" "grep -qx 'HERDR_MAX_VERIFIERS=1' '$E' && grep -qx 'HERDR_CHECK_SKIP_PATHS=' '$E'"
+check "추가한 설정의 설명도 함께" "grep -B1 -x 'HERDR_MAX_VERIFIERS=1' '$E' | grep -q '독립 검증자 수' && grep -B1 -x 'HERDR_CHECK_SKIP_PATHS=' '$E' | grep -q '예: HERDR_CHECK_SKIP_PATHS'"
+check "있는 값은 바꾸지 않음" "grep -qx 'HERDR_CHECK_TIMEOUT=1800' '$E' && [ \"\$(grep -c '^HERDR_CHECK_TIMEOUT=' '$E')\" = 1 ]"
+check "다시 sync해도 중복 없음" "[ \"\$(grep -c '^HERDR_MAX_VERIFIERS=' '$E')\" = 1 ] && [ \"\$(grep -c '^HERDR_CHECK_SKIP_PATHS=' '$E')\" = 1 ]"
+check "추가한 칸을 알림" "printf '%s' \"\$out\" | grep -q 'harness.env에 새 설정 추가: HERDR_MAX_VERIFIERS HERDR_CHECK_SKIP_PATHS'"
+set_env 's/^HERDR_CHECK_TIMEOUT=.*/HERDR_CHECK_TIMEOUT=3600/' "$E"
+
 echo "== 기존 프로젝트 보호"
 Q="$WORK/existing"; mkdir -p "$Q/.agents/skills/writing-project-docs"; echo mine >"$Q/.agents/skills/writing-project-docs/SKILL.md"
 check "같은 이름 스킬이면 init 중단" "! '$ROOT/bin/harness' init '$Q' >/dev/null 2>&1"

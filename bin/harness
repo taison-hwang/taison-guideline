@@ -35,8 +35,24 @@ sync_managed() {
   chmod +x "$TARGET"/.agents/bin/* "$TARGET"/.agents/hooks/*
   [[ -e "$TARGET/.claude/skills" ]] || ln -s ../.agents/skills "$TARGET/.claude/skills"
   update_agents_block
+  merge_env
   git -C "$HARNESS" rev-parse --short HEAD 2>/dev/null >"$TARGET/.agents/harness.version" || echo uncommitted >"$TARGET/.agents/harness.version"
   say "동기화: 스킬 ${#MANAGED_SKILLS[@]}개, 실행기, hook, AGENTS.md 표시 블록"
+}
+
+merge_env() { # 템플릿에 새로 생긴 설정 칸을 바로 위 설명과 함께 끝에 붙인다. 있는 칸의 값은 건드리지 않는다
+  local env="$TARGET/.agents/harness.env" template="$HARNESS/templates/harness.env" added
+  [[ -f "$env" ]] || return 0
+  added="$(awk -F= '
+    NR == FNR { if ($0 ~ /^[A-Z_]+=/) have[$1] = 1; next }
+    /^#/ { note = note $0 "\n"; next }
+    /^[A-Z_]+=/ && !($1 in have) { block = block "\n" note $0 "\n"; keys = keys " " $1 }
+    { note = "" }
+    END { if (keys != "") printf "%s\t%s", substr(keys, 2), block }
+  ' "$env" "$template")"
+  [[ -n "$added" ]] || return 0
+  printf '%s\n' "${added#*$'\t'}" >>"$env"
+  say "harness.env에 새 설정 추가: ${added%%$'\t'*} (기본값이다. 프로젝트에 맞게 고친다)"
 }
 
 update_agents_block() {
