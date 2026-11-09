@@ -53,6 +53,9 @@ HERDR_CHECK_HEAVY_CMD="npm test && npm run e2e"                    # 무거운 �
 HERDR_CHECK_FILE_CMD="npx eslint --no-warn-ignored {files}"        # 고친 파일만 빠르게. {files}에 목록이 들어간다
 HERDR_CHECK_TIMEOUT=3600                                           # 실행 시간 제한(초). 대기열 대기는 세지 않는다. 넉넉하게
 HERDR_CHECK_SKIP_PATHS="docs/* *.md"                               # 이것만 바뀌었으면 앞 PASS를 이어받는다(비우면 안 함)
+HERDR_CHECK_AFFECTED_CMD="scripts/affected-check.sh {files}"       # 바뀐 파일에 영향받는 검사만(영향 검사). 끝 코드 4면 전체 검사
+HERDR_LIGHT_MAX_LINES=150                                          # 경량 작업의 바뀐 줄 상한. 넘으면 전체 검사
+HERDR_LIGHT_DENY_PATHS="migrations/* */auth/*"                     # 바꾸면 경량으로 볼 수 없는 경로
 ```
 
 | 관문                               | 언제                                                                                                        | 무엇을                                                                                                                                                                                      | 실패하면                                                                          |
@@ -61,7 +64,9 @@ HERDR_CHECK_SKIP_PATHS="docs/* *.md"                               # 이것만 �
 | `[완료]` 보고 (`herdr-report`) | 워커가 `herdr-report "[완료] …"`를 실행할 때 | worktree면 커밋 안 된 변경이 없는지 확인하고 전체 검사. 메인 체크아웃에서 보내면 다른 세션의 변경이 섞여 있으므로 커밋된 HEAD만 보고, PASS 기록이 없으면 검사용 worktree에서 뒤에서 검사한다 | 보고를 보내지 않는다. 통과하면 보고 끝에 `검사 PASS <SHA>`를 붙인다 |
 | `[병합완료]` 보고 (`herdr-report`) | 워커가 병합 뒤 `herdr-report "[병합완료] <작업 ID> <SHA> …"`를 실행할 때 | 그 SHA가 메인 체크아웃 HEAD에 들어 있는지 확인하고, 그 SHA의 검사 PASS 기록을 붙인다. 기록이 없으면 그 SHA를 뒤에서 검사한다 | SHA가 들어 있지 않으면 보내지 않는다 |
 
-- Orchestrator는 `검사 PASS <SHA>`나 `검사 미설정`이 붙지 않은 `[완료]`를 받지 않는다. 워커가 쓴 설명이 아니라 이 기록으로 통과를 판단한다.
+- 영향 검사(`HERDR_CHECK_AFFECTED_CMD`): 있으면 일반 작업의 `[완료]` 관문은 기본 브랜치와 갈라진 뒤 바뀐 파일(지운 파일 포함)을 넘겨 그 파일에 영향을 받는 검사만 돌리고(`herdr-check --affected <기준>`) `영향 검사 PASS <SHA>`를 붙인다. 전체 검사(전체 회귀)는 `[병합완료]` 뒤 기본 브랜치 HEAD에서 뒤에서 돈다. 프로젝트에 하나씩 차례로 돌고, 차례가 오면 그때의 HEAD를 검사하므로 연달은 병합은 한 번에 덮는다. 실패하면 Orchestrator에 `[진행] <작업 ID> 병합 뒤 전체 검사 FAIL <SHA>`가 간다. 명령이 끝 코드 4(범위를 정할 수 없음: 의존성 목록·빌드 설정 변경 등)를 내면 그 자리에서 전체 검사를 돈다. 고르는 방법은 언어마다 다르다(`templates/harness.env`의 설명). 비우면 관문은 전체 검사다.
+- 경량 작업(`[배정]`에 `등급: 경량`): `[완료]`는 기준과 갈라진 뒤 바뀐 파일 전체에 `HERDR_CHECK_FILE_CMD`만 돌리고(`herdr-check --light`) `가벼운 검사 PASS <SHA>(경량)`을 붙인다. 바뀐 줄이 `HERDR_LIGHT_MAX_LINES`를 넘거나 `HERDR_LIGHT_DENY_PATHS`를 건드리면 전체 검사로 돌린다. `[병합완료]`는 영향 검사와 같이 곧바로 보내고 병합 뒤 전체 검사를 뒤에서 돌린다. 독립 검증도 하지 않는다. 등급은 hook이 `[배정]`에서 읽어 `received.tsv`에 남긴다.
+- Orchestrator는 `검사 PASS <SHA>`, `영향 검사 PASS <SHA>`, `검사 미설정`(경량은 `가벼운 검사 PASS`)이 붙지 않은 `[완료]`를 받지 않는다. 워커가 쓴 설명이 아니라 이 기록으로 통과를 판단한다.
 - 마지막 PASS 이후 바뀐 파일이 모두 `HERDR_CHECK_SKIP_PATHS`(glob, `*`는 `/`도 넘는다)에 맞으면 검사를 다시 돌리지 않고 그 PASS를 이어받는다. 보고에는 `검사 PASS <SHA> 이어받음 <앞 SHA>`로 붙는다. 파일 이동은 옮기기 전 경로도 보므로 코드를 문서 폴더로 옮겨도 이어받지 않는다. 검사가 그 파일을 읽으면(문서 링크 검사 등) 넣지 않는다.
 - 시간 제한은 정상 실행의 가장 긴 시간보다 넉넉하게 둔다. 두 단계의 실행 시간에만 걸고 대기열에서 기다린 시간은 세지 않는다. 넘기면 FAIL로 끊기고, 지난 PASS 중 가장 긴 검사 시간을 함께 알려 준다.
 - 무거운 단계는 이 기계의 모든 프로젝트가 함께 쓰는 대기열(`herdr-queue`) 아래서 돈다. 아래 "공용 검사 대기열"을 본다.

@@ -36,8 +36,8 @@ check "rebase로 패치가 바뀌면 병합 중단" "grep -q '첫 값이 다르�
 check "PASS 없이 병합 금지" "grep -qF '\`PASS\` 없이 \`[병합]\`을 보내지 않는다' '$O_REF'"
 check "판정을 직접 뒤집지 않음" "grep -q '판정을 직접 뒤집지 않는다' '$O_REF'"
 check "BLOCKED는 축소 조건에서 제외" "grep -qF '\`BLOCKED\`는 세지 않는다' '$O_REF'"
-check "첫 묶음은 첫 [완료] 수용까지만 먼저" "grep -qF '첫 \`[완료]\`를 수용 기준과 대조해 받아들인 뒤 나머지 코드 묶음을 배정한다' '$O_REF'"
-check "코드 안 바꾸는 작업은 처음부터 병행" "grep -q '코드를 바꾸지 않는 작업(조사, 스펙, 문서)은 처음부터' '$O_REF'"
+check "첫 묶음은 첫 [완료] 수용까지만 먼저" "grep -qF '첫 \`[완료]\`를 수용 기준과 대조해 받아들인 뒤 나머지 일반 코드 묶음을 배정한다' '$O_REF'"
+check "코드 안 바꾸는 작업은 처음부터 병행" "grep -q '코드를 바꾸지 않는 작업(조사, 스펙, 문서)과 경량 작업은 처음부터' '$O_REF'"
 check "첫 묶음 병합까지 기다리는 규칙 없음" "! grep -qE '병합까지 통과시킨다|첫 묶음이 병합까지 통과한 뒤' '$O_REF'"
 check "독립 검증은 검사를 기다리지 않고 배정" "grep -q '검사 결과를 기다리지 않고 독립 검증을 배정할 수 있다' '$O_REF'"
 check "병합은 같은 SHA의 검사 PASS와 판정 PASS 둘 다" "grep -qF '같은 SHA에 \`검사 PASS\`와 판정 \`PASS\`가 모두 있을 때만' '$O_REF'"
@@ -436,6 +436,97 @@ check "턴 종료 hook은 상태별 말머리를 안내" "echo '{}' | '$P/.agent
 set_env 's/^HERDR_CHECK_CMD=.*/HERDR_CHECK_CMD=/' "$P/.agents/harness.env"
 cd "$ROOT"; export PATH="$oldpath"; unset HERDR_ROLE HERDR_PROJECT HC_TERMINAL_ID XDG_CACHE_HOME HERDR_HEAVY_DIR HERDR_HEAVY_POLL
 
+echo "== 경량 작업"
+export HERDR_ROLE=worker-5 HERDR_PROJECT=demo HC_TERMINAL_ID=t55 XDG_CACHE_HOME="$WORK/cache"; oldpath="$PATH"; export PATH="$WORK/stub2:$PATH"
+R="$P/.agents/bin/herdr-report"; C="$P/.agents/bin/herdr-check"; TURN="$P/.agents/hooks/worker-turn.sh"
+check "harness.env에 경량 설정 칸" "grep -q '^HERDR_LIGHT_MAX_LINES=' '$P/.agents/harness.env' && grep -q '^HERDR_LIGHT_DENY_PATHS=' '$P/.agents/harness.env'"
+# 전체 검사는 t.txt(경량 작업이 만든 파일)가 있으면 실패한다. 병합 뒤 전체 검사 FAIL 알림을 보려는 것이다
+set_env 's/^HERDR_CHECK_CMD=.*/HERDR_CHECK_CMD="echo full >>..\/lfull.log; test ! -e t.txt"/; s/^HERDR_CHECK_FILE_CMD=.*/HERDR_CHECK_FILE_CMD="! grep -n BAD {files}"/; s/^HERDR_LIGHT_MAX_LINES=.*/HERDR_LIGHT_MAX_LINES=5/; s/^HERDR_LIGHT_DENY_PATHS=.*/HERDR_LIGHT_DENY_PATHS="secret\/*"/' "$P/.agents/harness.env"
+L="$WORK/light/repo"; mkdir -p "$WORK/light"; git init -q -b main "$L"; git -C "$L" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+lcommit() { git add -A && git -c user.email=t@t -c user.name=t commit -q -m "$1"; }
+for t in L-01 L-02 L-03; do printf '{"prompt":"<hc from=\\"t1\\">[배정] %s 등급: 경량 — 문구"}' "$t" | "$TURN" start; done
+printf '{"prompt":"[배정] L-09 — 계산 로직"}' | "$TURN" start
+check "[배정]의 등급을 기록(없으면 일반)" "awk -F'\t' '\$3==\"worker-5\" && \$6==\"L-01\" && \$7==\"경량\"' '$D/received.tsv' | grep -q . && awk -F'\t' '\$6==\"L-09\" && \$7==\"일반\"' '$D/received.tsv' | grep -q ."
+# 경량 [완료]: 바뀐 파일만 빠른 검사, 전체 검사는 돌지 않음
+git -C "$L" worktree add -q "$WORK/light/l1" -b l1; cd "$WORK/light/l1"; rm -f "$WORK/light/lfull.log"
+echo BAD >b.txt; lcommit bad; : >"$WORK/hc.log"
+check "경량 [완료]: 바뀐 파일 검사가 실패하면 막음" "! '$R' '[완료] L-01 x' >/dev/null 2>&1 && ! grep -q 'L-01' '$WORK/hc.log' && '$C' --status | grep -q '^FAIL '"
+git rm -q b.txt; echo ok >t.txt; lcommit ok; l1="$(git rev-parse HEAD)"; : >"$WORK/hc.log"
+"$R" "[완료] L-01 x" >/dev/null 2>&1
+check "경량 [완료]: 바뀐 파일만 검사하고 가벼운 검사 PASS를 붙임" "grep -q \"send t9 \\[완료\\] L-01 x · 가벼운 검사 PASS $l1(경량)\" '$WORK/hc.log' && [ ! -e '$WORK/light/lfull.log' ] && [ \"\$('$C' --status)\" = \"LIGHT $l1\" ]"
+check "경량 검사도 흐름 기록에 LIGHT로 남김" "grep -q '	LIGHT	' '$D/checks.tsv'"
+# 경량 기준을 넘으면 일반 관문
+git -C "$L" worktree add -q "$WORK/light/l2" -b l2 main; cd "$WORK/light/l2"; rm -f "$WORK/light/lfull.log"
+seq 1 10 >big.txt; lcommit big; : >"$WORK/hc.log"
+"$R" "[완료] L-02 x" >/dev/null 2>&1
+check "경량이라도 바뀐 줄이 상한을 넘으면 전체 검사" "grep -q 'send t9 \\[완료\\] L-02 x · 경량 기준 초과(바뀐 줄 10줄 > HERDR_LIGHT_MAX_LINES 5) · 검사 PASS' '$WORK/hc.log' && [ -e '$WORK/light/lfull.log' ]"
+git -C "$L" worktree add -q "$WORK/light/l3" -b l3 main; cd "$WORK/light/l3"; rm -f "$WORK/light/lfull.log"
+mkdir secret; echo k >secret/k.txt; lcommit secret; : >"$WORK/hc.log"
+"$R" "[완료] L-03 x" >/dev/null 2>&1
+check "경량이라도 금지 경로를 바꾸면 전체 검사" "grep -q 'send t9 \\[완료\\] L-03 x · 경량 기준 초과(경량 금지 경로 secret/k.txt' '$WORK/hc.log' && [ -e '$WORK/light/lfull.log' ]"
+# 일반 작업은 작아도 전체 검사
+git -C "$L" worktree add -q "$WORK/light/l9" -b l9 main; cd "$WORK/light/l9"; rm -f "$WORK/light/lfull.log"
+echo n >n.txt; lcommit n; : >"$WORK/hc.log"
+"$R" "[완료] L-09 x" >/dev/null 2>&1
+check "일반 작업은 작아도 전체 검사" "grep -q 'send t9 \\[완료\\] L-09 x · 검사 PASS' '$WORK/hc.log' && ! grep -q '가벼운' '$WORK/hc.log' && [ -e '$WORK/light/lfull.log' ]"
+# 경량 [병합완료]: 곧바로 보내고, 병합한 SHA의 전체 검사를 뒤에서 돌려 실패하면 알림
+cd "$L"; git merge -q --ff-only l1; : >"$WORK/hc.log"
+out="$("$R" "[병합완료] L-01 ${l1:0:12} x" 2>&1)"; rc=$?
+check "경량 [병합완료]는 전체 검사를 기다리지 않고 보냄" "[ $rc -eq 0 ] && grep -q \"send t9 \\[병합완료\\] L-01 ${l1:0:12} x · 가벼운 검사 PASS $l1(경량) · 전체 검사는 뒤에서\" '$WORK/hc.log'"
+wait_for "L-01 병합 뒤 전체 검사 FAIL" "$WORK/hc.log"
+check "병합 뒤 전체 검사가 실패하면 Orchestrator에 알림" "grep -q \"send t9 \\[진행\\] L-01 병합 뒤 전체 검사 FAIL ${l1:0:12}\" '$WORK/hc.log'"
+rm -f "$WORK/light/lfull.log"; cd "$WORK/light/l1"
+check "경량 기록은 전체 검사 PASS가 아님(전체 검사를 부르면 돈다)" "! '$C' >/dev/null 2>&1 && [ -e '$WORK/light/lfull.log' ]"
+cd "$L"
+set_env 's/^HERDR_CHECK_CMD=.*/HERDR_CHECK_CMD=/; s/^HERDR_CHECK_FILE_CMD=.*/HERDR_CHECK_FILE_CMD=/; s/^HERDR_LIGHT_MAX_LINES=.*/HERDR_LIGHT_MAX_LINES=150/; s/^HERDR_LIGHT_DENY_PATHS=.*/HERDR_LIGHT_DENY_PATHS=/' "$P/.agents/harness.env"
+cd "$ROOT"; export PATH="$oldpath"; unset HERDR_ROLE HERDR_PROJECT HC_TERMINAL_ID XDG_CACHE_HOME
+
+echo "== 영향 검사와 병합 뒤 전체 검사"
+export HERDR_ROLE=worker-12 HERDR_PROJECT=demo HC_TERMINAL_ID=t12 XDG_CACHE_HOME="$WORK/cache"; oldpath="$PATH"; export PATH="$WORK/stub2:$PATH"
+R="$P/.agents/bin/herdr-report"; C="$P/.agents/bin/herdr-check"
+check "harness.env에 영향 검사 설정 칸" "grep -q '^HERDR_CHECK_AFFECTED_CMD=' '$P/.agents/harness.env'"
+A="$WORK/aff"; mkdir -p "$A"
+# 영향 검사: 받은 파일을 적고, cfg.lock이 있으면 범위를 정할 수 없다(4), BAD가 든 파일이 있으면 실패
+cat >"$A/aff.sh" <<'AFF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >>"$(dirname "$0")/aff.log"
+for f; do [ "$f" = cfg.lock ] && exit 4; [ -f "$f" ] && grep -q BAD "$f" && exit 1; done
+exit 0
+AFF
+chmod +x "$A/aff.sh"
+set_env "s|^HERDR_CHECK_CMD=.*|HERDR_CHECK_CMD=\"echo full >>$A/full.log; test ! -e broken.txt\"|; s|^HERDR_CHECK_AFFECTED_CMD=.*|HERDR_CHECK_AFFECTED_CMD=\"$A/aff.sh {files}\"|" "$P/.agents/harness.env"
+AG="$A/repo"; git init -q -b main "$AG"; echo o >"$AG/old.txt"; echo k >"$AG/keep.txt"
+git -C "$AG" add -A; git -C "$AG" -c user.email=t@t -c user.name=t commit -q -m init
+acommit() { git add -A && git -c user.email=t@t -c user.name=t commit -q -m "$1"; }
+git -C "$AG" worktree add -q "$A/a1" -b a1; cd "$A/a1"
+echo BAD >y.txt; acommit bad; : >"$WORK/hc.log"
+check "영향 검사가 실패하면 [완료]를 막음" "! '$R' '[완료] AF-01 x' >/dev/null 2>&1 && ! grep -q 'AF-01' '$WORK/hc.log'"
+git rm -q y.txt old.txt; echo x >x.txt; acommit ok; a1="$(git rev-parse HEAD)"; rm -f "$A/aff.log" "$A/full.log"; : >"$WORK/hc.log"
+"$R" "[완료] AF-01 x" >/dev/null 2>&1
+check "일반 [완료]는 영향 검사만 돌리고 영향 검사 PASS를 붙임" "grep -q \"send t9 \\[완료\\] AF-01 x · 영향 검사 PASS $a1\" '$WORK/hc.log' && [ ! -e '$A/full.log' ] && [ \"\$('$C' --status)\" = \"AFFECTED $a1\" ]"
+check "영향 검사에는 기본 브랜치와 갈라진 뒤 바뀐 파일만, 지운 파일도 넘김" "sort -u '$A/aff.log' | tr '\n' ' ' | grep -qx 'old.txt x.txt '"
+git -C "$AG" worktree add -q "$A/a2" -b a2 main; cd "$A/a2"
+echo l >cfg.lock; acommit lock; rm -f "$A/full.log"; : >"$WORK/hc.log"
+"$R" "[완료] AF-02 x" >/dev/null 2>&1
+check "영향 범위를 정할 수 없으면(끝 코드 4) 전체 검사" "grep -q 'send t9 \\[완료\\] AF-02 x · 검사 PASS' '$WORK/hc.log' && [ -e '$A/full.log' ]"
+git -C "$AG" worktree add -q "$A/a3" -b a3 main; cd "$A/a3"
+echo z >z.txt; acommit z; rm -f "$A/full.log"; : >"$WORK/hc.log"
+"$R" --bg "[완료] AF-03 x" >/dev/null 2>&1; wait_for "AF-03 x · 영향 검사 PASS" "$WORK/hc.log"
+check "--bg도 영향 검사로 [완료]를 보냄" "grep -q 'send t9 \\[완료\\] AF-03 x · 영향 검사 PASS' '$WORK/hc.log' && [ ! -e '$A/full.log' ]"
+# 병합 뒤 전체 검사: 차례가 오면 기본 브랜치 HEAD를 검사하고, 이미 검사한 HEAD는 다시 돌지 않는다
+cd "$AG"; git merge -q --ff-only a1; echo m >m2.txt; git add m2.txt; git -c user.email=t@t -c user.name=t commit -q -m m2; mhead="$(git rev-parse HEAD)"
+rm -f "$A/full.log"; : >"$WORK/hc.log"
+"$R" "[병합완료] AF-01 ${a1:0:12} x" >/dev/null 2>&1
+check "영향 검사만 거친 SHA의 [병합완료]는 곧바로 보냄" "grep -q \"send t9 \\[병합완료\\] AF-01 ${a1:0:12} x · 영향 검사 PASS $a1 · 전체 검사는 뒤에서\" '$WORK/hc.log'"
+wait_for "PASS $mhead" "$D/.merged.check"
+check "병합 뒤 전체 검사는 그때의 기본 브랜치 HEAD를 검사(역할 merged에 기록)" "grep -q \"^PASS $mhead \" '$D/.merged.check' && ! grep -q \" $a1 \" '$D/.merged.check' && [ \"\$(wc -l <'$A/full.log')\" -eq 1 ]"
+check "다른 역할도 기본 브랜치 SHA의 전체 검사 기록을 조회" "[ \"\$(HERDR_ROLE=orchestrator '$C' --status-of $mhead)\" = \"PASS $mhead\" ]"
+"$R" "[병합완료] AF-01 ${a1:0:12} again" >/dev/null 2>&1
+wait_for "생략" "$D/.worker-12.merged-${a1:0:12}.out"
+check "이미 전체 검사한 기본 브랜치 HEAD는 검사용 worktree도 맞추지 않고 생략" "[ \"\$(wc -l <'$A/full.log')\" -eq 1 ] && grep -q '병합 뒤 전체 검사 생략' '$D/.worker-12.merged-${a1:0:12}.out'"
+set_env 's/^HERDR_CHECK_CMD=.*/HERDR_CHECK_CMD=/; s/^HERDR_CHECK_AFFECTED_CMD=.*/HERDR_CHECK_AFFECTED_CMD=/' "$P/.agents/harness.env"
+cd "$ROOT"; export PATH="$oldpath"; unset HERDR_ROLE HERDR_PROJECT HC_TERMINAL_ID XDG_CACHE_HOME
+
 echo "== 받은 지시와 판정 기록"
 TURN="$P/.agents/hooks/worker-turn.sh"; R="$P/.agents/bin/herdr-report"
 rm -f "$D/received.tsv"
@@ -620,6 +711,8 @@ echo "== 문서"
 W_REF="$P/.agents/skills/running-herdr-autopilot/references/worker.md"; O_REF2="$P/.agents/skills/running-herdr-autopilot/references/orchestrator.md"
 check "워커: 뒤 검사와 쌓기, 보고한 SHA까지만 병합" "grep -q 'herdr-report --bg' '$W_REF' && grep -q '쌓은 작업이 있을 때 병합' '$W_REF' && grep -q '검사 중인 커밋은 amend' '$W_REF'"
 check "워커: 무거운 명령은 대기열 아래서" "grep -q 'herdr-queue run --role' '$W_REF'"
+check "회귀는 의존 범위로: 워커·Orchestrator 검증 명령·구현 스킬" "grep -q '회귀 확인은 바꾼 코드와 그 코드에 의존하는 부분' '$W_REF' && grep -q '전체 테스트, 전체 e2e, 전체 게이트를 수용 기준이나 검증 명령에 넣지 않는다' '$P/.agents/skills/running-herdr-autopilot/references/orchestrator.md' && grep -q '회귀 확인은 크기와 상관없이' '$P/.agents/skills/implementing-with-tdd/SKILL.md'"
+check "등급: Orchestrator 3절·워커 경량 절·구현 스킬이 같은 기준" "grep -q '### 작업 등급' '$P/.agents/skills/running-herdr-autopilot/references/orchestrator.md' && grep -q '^## 경량 작업' '$W_REF' && grep -q '^## 작업 크기에 맞춘다' '$P/.agents/skills/implementing-with-tdd/SKILL.md'"
 check "워커: 상태별 말머리, 병합은 patch-id·빨리 감기·[병합완료]" "grep -q '| Orchestrator의 질문에 답한다' '$W_REF' && grep -q 'git patch-id --stable' '$W_REF' && grep -q 'merge --ff-only' '$W_REF' && grep -q '\[병합완료\] <작업 ID> <병합한 SHA>' '$W_REF'"
 check "Orchestrator: 말머리로만 상태 판단, 범위는 커밋으로, 완료 선언 정산" "grep -q '작업의 상태는 말머리로만 판단한다' '$O_REF2' && grep -q '범위는 보고의 요약이 아니라 커밋으로' '$O_REF2' && grep -q '## 8. 완료 선언' '$O_REF2' && grep -q '정산: work-plan' '$O_REF2'"
 T_REF="$P/.agents/skills/implementing-with-tdd/SKILL.md"
