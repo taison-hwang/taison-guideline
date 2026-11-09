@@ -202,7 +202,7 @@ def main():
     for v in reports.values():
         v.sort()
 
-    groups, missing, seen = {}, [], set()
+    groups, missing, seen, models = {}, [], set(), set()
     for sid, sess in by_sid.items():
         path = find_transcript(sess, codex_home)
         if not path:
@@ -214,6 +214,7 @@ def main():
         for ts, model, usage in records:
             if since and ts < since:
                 continue
+            models.add(model or "?")
             i = bisect.bisect_left(epochs, ts.timestamp())
             values = {
                 "role": sess.get("role", ""), "tool": sess.get("tool", ""), "model": model or "?",
@@ -235,6 +236,9 @@ def main():
 
     rows = sorted(groups.items(), key=lambda kv: -total(kv[1]))
     if a.tsv:
+        unpriced = sorted({m for m in models if price_for(m, prices) is None})
+        print("# 비용(cost_usd)은 단가표 모델만 API 단가로 환산한 추정값이다. 구독 사용이면 실제 청구액이 아니다. "
+              f"단가표: {os.path.abspath(prices_path)}. 단가 없는 모델: {', '.join(unpriced) or '없음'} (그 몫은 cost_usd에 없고, 단가 없는 모델만 있는 줄은 빈칸)")
         print("\t".join(by + ["responses", "input", "cache_write", "cache_read", "output", "cost_usd"]))
         for key, g in rows:
             cost = f"{g['cost']:.6f}" if g["priced"] else ""
