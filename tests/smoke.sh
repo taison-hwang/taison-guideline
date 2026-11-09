@@ -4,13 +4,14 @@
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+trap '[ -n "${KEEP:-}" ] || rm -rf "$WORK"' EXIT
 pass=0 fail=0
 ok() { pass=$((pass + 1)); }
 no() { fail=$((fail + 1)); echo "실패: $1"; }
 check() { if eval "$2"; then ok; else no "$1"; fi; }
 # sed -i는 GNU와 BSD(macOS)의 인자가 달라 임시 파일로 바꾼다.
 set_env() { sed "$1" "$2" >"$2.tmp" && mv "$2.tmp" "$2"; }
+wait_for() { local i; for i in $(seq 1 150); do grep -q "$1" "$2" 2>/dev/null && return 0; sleep 0.2; done; return 1; }
 
 P="$WORK/demo"
 "$ROOT/bin/harness" init "$P" >/dev/null
@@ -31,7 +32,7 @@ C_REF="$P/.agents/skills/managing-session-context/SKILL.md"
 check "검증자는 분리된 worktree에서 실행" "grep -q 'git worktree add --detach' '$W_REF'"
 check "검증자는 분기점 기준으로 범위 확인" "grep -qF 'git diff <분기점 SHA> <head SHA>' '$W_REF'"
 check "검증자는 판정으로 보고" "grep -qF '[판정] <묶음> PASS|ISSUES|BLOCKED' '$W_REF'"
-check "rebase에서 코드가 바뀌면 병합 중단" "grep -q '충돌 해결이나 코드 수정이 생기면 병합하지 않고' '$W_REF'"
+check "rebase로 패치가 바뀌면 병합 중단" "grep -q '첫 값이 다르면(충돌 해결, 코드 수정, 바로 옆 줄이 바뀐 경우) 병합하지 않는다' '$W_REF'"
 check "PASS 없이 병합 금지" "grep -qF '\`PASS\` 없이 \`[병합]\`을 보내지 않는다' '$O_REF'"
 check "판정을 직접 뒤집지 않음" "grep -q '판정을 직접 뒤집지 않는다' '$O_REF'"
 check "BLOCKED는 축소 조건에서 제외" "grep -qF '\`BLOCKED\`는 세지 않는다' '$O_REF'"
@@ -187,19 +188,39 @@ git -C "$G" worktree add -q "$WORK/repo-wt" -b wt
 cd "$WORK/repo-wt"; echo x >a.txt; : >"$WORK/hc.log"
 check "worktree에 커밋 안 된 변경이 있으면 [완료]를 막음" "! '$R' '[완료] A-03 x' >/dev/null 2>&1 && ! grep -q 'A-03' '$WORK/hc.log'"
 check "[진행]은 커밋 안 된 변경이 있어도 보냄" "'$R' '[진행] A-03 x' >/dev/null 2>&1 && grep -q 'A-03' '$WORK/hc.log'"
-rm -f a.txt; cd "$G"; git -C "$G" worktree remove "$WORK/repo-wt"
-echo x >"$G/a.txt"; : >"$WORK/hc.log"
-check "메인 체크아웃의 [완료]는 커밋 안 된 변경이 있어도 검사 후 보냄" "'$R' '[완료] A-03m x' >/dev/null 2>&1 && grep -q 'A-03m x · 검사 PASS' '$WORK/hc.log'"
-commit_all a; : >"$WORK/hc.log"; rm -f "$G/count.log"
+rm -f a.txt
+# 관문은 작업한 worktree에서 거친다
+commit_wt() { git add -A && git -c user.email=t@t -c user.name=t commit -q -m "$1"; }
+echo a >a2.txt; commit_wt a; : >"$WORK/hc.log"; rm -f count.log
 "$R" "[완료] A-04 x" >/dev/null 2>&1
-check "검사 통과하면 SHA를 붙여 보냄" "grep -q \"send t9 \\[완료\\] A-04 x · 검사 PASS \$(git -C '$G' rev-parse HEAD)\" '$WORK/hc.log'"
-touch "$G/fail.flag"; commit_all fail; : >"$WORK/hc.log"
+check "검사 통과하면 SHA를 붙여 보냄" "grep -q \"send t9 \\[완료\\] A-04 x · 검사 PASS \$(git rev-parse HEAD)\" '$WORK/hc.log'"
+check "검사 통과 기록을 SHA로 조회" "'$C' --status-of \$(git rev-parse HEAD) | grep -q '^PASS '"
+check "기록이 없는 SHA는 NONE" "[ \"\$('$C' --status-of \$(git rev-parse HEAD~1))\" = NONE ]"
+touch fail.flag; commit_wt fail; : >"$WORK/hc.log"
 check "검사 실패하면 [완료]를 막음" "! '$R' '[완료] A-05 x' >/dev/null 2>&1 && ! grep -q 'A-05' '$WORK/hc.log'"
 check "실패 기록" "'$C' --status | grep -q '^FAIL '"
-git -C "$G" rm -q fail.flag; commit_all fix; rm -f "$G/count.log"
+git rm -q fail.flag; commit_wt fix; rm -f count.log
 "$C" >/dev/null 2>&1; "$R" "[완료] A-06 x" >/dev/null 2>&1
-check "같은 HEAD에서 통과한 기록이 있으면 다시 돌리지 않음" "[ \"\$(wc -l <'$G/count.log')\" -eq 1 ] && grep -q 'A-06 x · 검사 PASS' '$WORK/hc.log'"
+check "같은 HEAD에서 통과한 기록이 있으면 다시 돌리지 않음" "[ \"\$(wc -l <count.log)\" -eq 1 ] && grep -q 'A-06 x · 검사 PASS' '$WORK/hc.log'"
+"$C" >/dev/null 2>&1
+check "이미 통과한 커밋은 herdr-check를 다시 불러도 돌지 않음" "[ \"\$(wc -l <count.log)\" -eq 1 ]"
 check "Orchestrator의 [완료]는 관문을 거치지 않음" "touch '$G/dirty.txt'; HERDR_ROLE=orchestrator '$R' '[완료] x' >/dev/null 2>&1; rm -f '$G/dirty.txt'; ! grep -q 'run' '$WORK/hc.log'"
+fixed="$(git rev-parse HEAD)"
+# 병합: 메인 체크아웃에 빨리 감기로 넣고 [병합완료]로 알린다
+cd "$G"; : >"$WORK/hc.log"
+check "[병합완료]는 기본 브랜치에 없는 SHA를 거부" "! '$R' \"[병합완료] A-06 ${fixed:0:12} x\" >/dev/null 2>&1 && ! grep -q 'A-06' '$WORK/hc.log'"
+check "[병합완료]는 SHA가 없으면 거부" "! '$R' '[병합완료] A-06 x' >/dev/null 2>&1"
+git merge -q --ff-only wt; rm -f "$WORK/repo-wt/count.log" count.log; echo x >"$G/a.txt"
+"$R" "[병합완료] A-06 ${fixed:0:12} x" >/dev/null 2>&1
+check "[병합완료]는 그 SHA의 PASS 기록을 붙여 바로 보냄(검사를 다시 돌리지 않음)" "grep -q \"send t9 \\[병합완료\\] A-06 ${fixed:0:12} x · 검사 PASS $fixed\" '$WORK/hc.log' && [ ! -e count.log ] && [ ! -e '$WORK/repo-wt/count.log' ]"
+check "[병합완료]를 보고 기록에 남김" "tail -n 1 '$D/reports.tsv' | awk -F'\t' '\$5==\"병합완료\" && \$6==\"A-06\" && \$7==\"$fixed\"' | grep -q ."
+# 메인 체크아웃의 [완료]: 섞인 변경이 있는 그 자리에서 검사하지 않고 커밋된 HEAD를 검사용 worktree에서 검사한다
+echo m >"$G/m.txt"; commit_all m; echo y >"$G/stray.txt"; : >"$WORK/hc.log"; mhead="$(git rev-parse HEAD)"
+out="$(XDG_CACHE_HOME="$WORK/cache" "$R" "[완료] A-07 x" 2>&1)"
+check "메인 체크아웃의 [완료]는 그 자리에서 검사하지 않음" "[ ! -e count.log ] && grep -q 'send t9 \\[진행\\] A-07 커밋 ${mhead:0:12} 검사 중(뒤에서)' '$WORK/hc.log' && printf '%s' \"\$out\" | grep -q '커밋된 HEAD'"
+wait_for "A-07 x · 검사 PASS" "$WORK/hc.log"
+check "메인 체크아웃의 [완료]는 커밋된 HEAD를 뒤에서 검사해 보냄" "grep -q \"send t9 \\[완료\\] A-07 x · 검사 PASS $mhead\" '$WORK/hc.log'"
+rm -f "$G/stray.txt"; git -C "$G" worktree remove --force "$WORK/repo-wt"
 cd "$ROOT"
 
 echo BAD >"$G/bad.txt"; echo ok >"$G/ok.txt"
@@ -328,7 +349,6 @@ cd "$ROOT"; unset HERDR_ROLE HERDR_PROJECT
 echo "== 공용 검사 대기열"
 export HERDR_HEAVY_DIR="$WORK/heavy" HERDR_HEAVY_POLL=0.1 HERDR_PROJECT=demo
 Q="$P/.agents/bin/herdr-queue"; ORD="$WORK/order.log"; : >"$ORD"
-wait_for() { local i; for i in $(seq 1 150); do grep -q "$1" "$2" 2>/dev/null && return 0; sleep 0.2; done; return 1; }
 check "빈 대기열" "[ \"\$('$Q' ahead)\" = 0 ] && '$Q' | grep -q '대기열이 비었다'"
 "$Q" run --role a --sha aaa -- bash -c "echo a-start >>'$ORD'; sleep 1.5; echo a-end >>'$ORD'" &
 wait_for a-start "$ORD"
@@ -407,6 +427,12 @@ check "실패 로그는 SHA별로 남김" "[ -e '$D/.worker-9.check-${s2:0:12}.l
 check "--bg는 [완료]에만" "! '$R' --bg '[진행] S-03 x' >/dev/null 2>&1"
 git rm -q fail.flag; fcommit_wt s3; "$P/.agents/bin/herdr-check" >/dev/null 2>&1; : >"$WORK/hc.log"
 check "이미 통과한 SHA면 --bg도 바로 [완료]" "'$R' --bg '[완료] S-03 x' >/dev/null 2>&1 && grep -q '\\[완료\\] S-03 x · 검사 PASS' '$WORK/hc.log' && ! grep -q '\\[진행\\] S-03' '$WORK/hc.log'"
+echo s4 >s4.txt; fcommit_wt s4
+(flock 9; sleep 1.5) 9>"$XDG_CACHE_HOME/herdr/check/demo/worker-9.lock" & sleep 0.2
+"$R" --bg "[완료] S-04 x" >/dev/null 2>&1; sleep_until_next_second; echo '{}' | "$P/.agents/hooks/worker-turn.sh" start
+wait_for "S-04 x · 검사 PASS" "$WORK/hc.log"
+check "뒤 검사의 자동 보고는 그사이 시작한 턴의 보고로 세지 않음" "echo '{}' | '$P/.agents/hooks/worker-turn.sh' stop | jq -e '.decision == \"block\"' >/dev/null"
+check "턴 종료 hook은 상태별 말머리를 안내" "echo '{}' | '$P/.agents/hooks/worker-turn.sh' stop | jq -r .reason | grep -q '병합완료.*답변'"
 set_env 's/^HERDR_CHECK_CMD=.*/HERDR_CHECK_CMD=/' "$P/.agents/harness.env"
 cd "$ROOT"; export PATH="$oldpath"; unset HERDR_ROLE HERDR_PROJECT HC_TERMINAL_ID XDG_CACHE_HOME HERDR_HEAVY_DIR HERDR_HEAVY_POLL
 
@@ -423,6 +449,20 @@ check "말머리 없는 입력은 기록하지 않음" "[ \"\$(wc -l <'$D/receiv
 PATH="$WORK/stub2:$PATH" HERDR_ROLE=verifier-1 HERDR_PROJECT=demo "$R" "[판정] B-01 ISSUES abc1234 /tmp/v.md" >/dev/null 2>&1
 check "판정 결과와 SHA 기록" "tail -n 1 '$D/reports.tsv' | awk -F'\t' '\$5==\"판정\" && \$6==\"B-01\" && \$7==\"abc1234\" && \$8==\"ISSUES\"' | grep -q ."
 
+echo "== 보고 대상이 둘일 때"
+mkdir -p "$WORK/stub3"
+cat >"$WORK/stub3/hc" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$WORK/hc3.log"
+case "\$1" in
+  ls) case "\$*" in *role=orchestrator*) echo '{"terminals":[{"address":"t8"},{"address":"t9"}]}' ;; *) echo '{"terminals":[]}' ;; esac ;;
+  get) case "\$2" in t8) echo '{"created_ms":100}' ;; t9) echo '{"created_ms":200}' ;; *) echo '{}' ;; esac ;;
+esac
+EOF
+chmod +x "$WORK/stub3/hc"; : >"$WORK/hc3.log"
+PATH="$WORK/stub3:$PATH" HERDR_ROLE=worker-6 HERDR_PROJECT=demo "$P/.agents/bin/herdr-report" "[진행] Z-01 x" >/dev/null 2>&1
+check "Orchestrator가 둘이면(교체 중) 가장 최근 세션에 보고" "grep -q '^send t9 \\[진행\\] Z-01' '$WORK/hc3.log' && ! grep -q '^send t8' '$WORK/hc3.log'"
+
 echo "== 흐름 측정"
 FL="$HOME/.claude/herdr/handoff/flow"; mkdir -p "$FL"; FLOW="$P/.agents/bin/herdr-flow"
 printf 'epoch\ttime\trole\tsession_id\ttag\ttask\tsha\tresult\n' >"$FL/reports.tsv"
@@ -430,12 +470,15 @@ printf '%s\tx\t%s\ts\t%s\tB-01\t%s\t%s\n' 900 verifier-1 완료 '' '' 1000 worke
 sed -i.bak 's/^3000\tx\tworker-2\ts\t완료\tB-01/3000\tx\tworker-2\ts\t완료\tC-01/' "$FL/reports.tsv" && rm -f "$FL/reports.tsv.bak"
 printf 'epoch\ttime\trole\tsession_id\ttag\ttask\n400\tx\tworker-1\ts\t배정\tB-01\n2000\tx\tworker-1\ts\t병합\tB-01\n3100\tx\tworker-3\ts\t배정\tD-01\n3300\tx\tworker-3\ts\t병합\tD-01\n' >"$FL/received.tsv"
 printf '3200\tx\tworker-3\ts\t완료\tD-01\t\t\n' >>"$FL/reports.tsv"
+printf '4000\tx\tworker-4\ts\t배정\tE-01\n4200\tx\tworker-4\ts\t병합\tE-01\n' >>"$FL/received.tsv"
+printf '4100\tx\tworker-4\ts\t완료\tE-01\t\t\n4500\tx\tworker-4\ts\t병합완료\tE-01\tshaE\t\n4600\tx\tworker-4\ts\t완료\tE-01\t\t\n' >>"$FL/reports.tsv"
 printf 'epoch\ttime\trole\tsession_id\tsha\tresult\tseconds\tqueue_s\n700\tx\tworker-1\ts\tsha1\tPASS\t300\t600\n1400\tx\tworker-1\ts\tsha2\tPASS\t100\n2400\tx\tworker-1\ts\tsha3\tINHERIT\t0\n2900\tx\tworker-2\ts\tsha9\tFAIL\t50\n' >"$FL/checks.tsv"
 check "작업별: 작업·관문 대기·병합 시간, 검사, 판정" "'$FLOW' --project flow --tsv | grep -qxF \"\$(printf 'B-01\t600\t1000\t600\t3\t400\tISSUES>PASS')\""
 check "병합 지시 뒤 완료가 없으면 병합 칸은 비움" "'$FLOW' --project flow --tsv | grep -qxF \"\$(printf 'D-01\t100\t100\t\t0\t0\t')\""
+check "병합 구간은 [병합완료]까지" "'$FLOW' --project flow --tsv | grep -qxF \"\$(printf 'E-01\t100\t100\t300\t0\t0\t')\""
 check "배정 기록이 없으면 그 칸은 비움" "'$FLOW' --project flow --tsv | grep -qxF \"\$(printf 'C-01\t\t\t\t1\t50\t')\""
 ftbl="$("$FLOW" --project flow)"
-check "표에 관문 대기 합계" "printf '%s' \"\$ftbl\" | grep -q '관문 대기 합계 18m20s'"
+check "표에 관문 대기 합계" "printf '%s' \"\$ftbl\" | grep -q '관문 대기 합계 20m00s'"
 check "역할별 검사 요약(이어받음 포함)" "printf '%s' \"\$ftbl\" | grep -E '^worker-1 +3 +2 +0 +1 ' >/dev/null"
 check "역할별 대기열 대기 시간(예전 기록은 0)" "printf '%s' \"\$ftbl\" | grep -E '^worker-1 .* 10m00s\$' >/dev/null && printf '%s' \"\$ftbl\" | grep -E '^worker-2 .* 0s\$' >/dev/null"
 check "기록이 없으면 실패" "! '$FLOW' --project nothing >/dev/null 2>&1"
@@ -577,6 +620,10 @@ echo "== 문서"
 W_REF="$P/.agents/skills/running-herdr-autopilot/references/worker.md"; O_REF2="$P/.agents/skills/running-herdr-autopilot/references/orchestrator.md"
 check "워커: 뒤 검사와 쌓기, 보고한 SHA까지만 병합" "grep -q 'herdr-report --bg' '$W_REF' && grep -q '쌓은 작업이 있을 때 병합' '$W_REF' && grep -q '검사 중인 커밋은 amend' '$W_REF'"
 check "워커: 무거운 명령은 대기열 아래서" "grep -q 'herdr-queue run --role' '$W_REF'"
+check "워커: 상태별 말머리, 병합은 patch-id·빨리 감기·[병합완료]" "grep -q '| Orchestrator의 질문에 답한다' '$W_REF' && grep -q 'git patch-id --stable' '$W_REF' && grep -q 'merge --ff-only' '$W_REF' && grep -q '\[병합완료\] <작업 ID> <병합한 SHA>' '$W_REF'"
+check "Orchestrator: 말머리로만 상태 판단, 범위는 커밋으로, 완료 선언 정산" "grep -q '작업의 상태는 말머리로만 판단한다' '$O_REF2' && grep -q '범위는 보고의 요약이 아니라 커밋으로' '$O_REF2' && grep -q '## 8. 완료 선언' '$O_REF2' && grep -q '정산: work-plan' '$O_REF2'"
+T_REF="$P/.agents/skills/implementing-with-tdd/SKILL.md"
+check "구현 스킬: 설계·작업 종류별·완료 근거" "grep -q '## 코드를 쓰기 전에' '$T_REF' && grep -q '### 리팩터링' '$T_REF' && grep -q '### 버그 수정' '$T_REF' && grep -q '## 완료 근거' '$T_REF' && grep -q '두 가지 가상 편집' '$T_REF'"
 check "Orchestrator: 대기열 순번으로 만료, 급함은 임계 경로만" "grep -q 'herdr-queue urgent' '$O_REF2' && grep -q '임계 경로에만 쓴다' '$O_REF2'"
 check "저장소 전체 링크" "python3 -I '$ROOT/core/skills/writing-project-docs/scripts/check_md_links.py' '$ROOT/README.md' '$ROOT/core' '$ROOT/docs' '$ROOT/templates' >/dev/null"
 check "설치된 docs 색인" "python3 -I '$ROOT/core/skills/writing-project-docs/scripts/check_md_links.py' '$P/docs' >/dev/null"

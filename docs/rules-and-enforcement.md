@@ -28,6 +28,12 @@
 | 무거운 검사는 기계 전체가 함께 쓰는 대기열에서 돌고, 시간 제한은 실행에만 건다 | `herdr-check`(`HERDR_CHECK_HEAVY_CMD`)·`herdr-queue`(자리, 급함, 메모리·부하 가드, 프로세스 묶음 정리) | 겹친 테스트가 다른 세션을 OOM으로 죽였고, 대기를 시간 제한에 넣어 급한 검사가 대기열 뒤에서 실패했다. 린트는 무거운 검사를 12분 기다렸다(zip-viewer 2026-11-09) | `herdr-flow`의 역할별 대기열 시간과 OOM·시간 초과 횟수를 본다 |
 | 검사를 뒤에서 돌리는 동안 같은 묶음의 다음 작업을 쌓는다. 병합은 보고한 SHA까지만 | `herdr-report --bg`(보고한 SHA를 별도 worktree에서 검사, PASS면 자동 `[완료]`, FAIL이면 작성 세션에 알림), 문구 | 검사 대기 중 워커가 놀았다. 검사·판정은 SHA에 묶이므로 위에 쌓아도 관문은 그대로다 | 쌓은 작업 중 아래 커밋 실패로 옮긴 비율과, `[완료]`부터 다음 `[완료]`까지 시간을 본다 |
 | 대기에는 소요 시간을 예측해 만료를 두고, 만료되면 진행부터 확인한다 | 문구, 상태판 대기 표, `herdr-flow`의 지난 기록 | 만료 없는 대기는 원인을 확인하지 않은 채 무한정 이어진다(실측). 테스트는 수 시간 걸릴 수 있어 짧은 고정 만료는 정상 작업을 끊는다 | 만료 처리 기록 중 대기를 실제로 줄인 비율과, 진행 중이었는데 끊은 비율을 본다 |
+| 작업 상태는 보고 말머리로만 판단한다. 병합은 `[병합완료]`, 질문 답은 `[답변]` | `herdr-report`(`[병합완료]`는 SHA가 기본 브랜치에 들어 있고 검사 PASS 기록이 있어야 보낸다), 턴 종료 hook 문구, Orchestrator 문구 | 보고 종류가 검사 관문에 묶여 있으면 워커가 검사를 피하려고 `[차단]`이나 `hc send` 직접 발송으로 대신해 Orchestrator가 완료를 잘못 판단한다(zip-viewer 하네스 분석 P3, 2026-11-09) | `reports.tsv` 밖의 직접 발송과 말머리를 잘못 쓴 보고가 줄었는지 Orchestrator transcript로 센다 |
+| 메인 체크아웃에서는 검사하지 않는다 | `herdr-report`(커밋된 HEAD만 보고, PASS 기록이 없으면 검사용 worktree에서 검사), `herdr-check --status-of` | 메인 체크아웃에는 다른 세션의 변경이 늘 있어 기록 키가 `+dirty`로 어긋나고, 잠금 없는 전체 검사가 돌아 메모리가 2 GiB까지 떨어졌다(zip-viewer P2) | 메인 체크아웃에서 돈 전체 검사 수를 `checks.tsv`로 센다 |
+| 뒤에서 도는 검사의 자동 보고는 세션의 턴 보고로 세지 않는다 | `herdr-report --bg-run`이 보고 시각 기록을 남기지 않는다 | 자동 보고가 쌓은 작업을 하던 턴을 보고한 것으로 만들어 그 턴이 조용히 끝날 수 있다(코드 확인) | 빼면 smoke의 해당 검사가 실패한다 |
+| 판정은 rebase 뒤 `git patch-id`가 같을 때만 유지한다. 병합은 빨리 감기로만 한다 | 문구(명령 포함), `[병합완료]`의 PASS 기록 확인(병합 커밋은 기록이 없어 다시 검사된다) | "충돌이나 코드 수정이 없었다"는 작성자 판단은 바로 옆 줄 변경을 놓친다. 병합 커밋은 검사하지 않은 트리다 | 판정 유지 뒤 기본 브랜치에서 찾은 결함 수를 본다 |
+| 완료는 실제 사용 경로에서 확인한 것이다. 대신 확인한 것과 결론 없는 확인은 미확인이다 | 문구(`implementing-with-tdd`의 "완료 근거", Orchestrator 4절), 독립 검증 | 작성자는 의도한 것을 확인하고, 단위 테스트 통과는 기능 동작을 보이지 않는다(시험 2에서 실사용 경로로만 결함 적발) | 판정 ISSUES 중 작성자가 실사용 경로를 확인했다고 보고한 비율을 본다 |
+| 최종 완료 전에 완료 조건을 기본 브랜치에서 확인하고 작업·세션·대기를 정산한다 | 문구(Orchestrator 8절) | 워커 보고의 합은 기본 브랜치의 상태가 아니다. 버리거나 흡수한 작업이 기록 없이 사라진다 | 완료 보고 뒤 사용자가 찾은 누락 수를 본다 |
 | 사용자 결정은 그 결정이 필요한 단계만 막는다 | 문구 | 결정에 걸린 작업도 대부분은 선택지와 무관하다(크기 예산 사례) | 결정 대기 중 진행한 일이 결정 뒤 버려진 비율을 본다 |
 | 재현한 결함만 막는다 | 문구 | 리뷰어는 항상 뭔가 찾아내 과잉 수정을 부른다 | 후속 제안 중 나중에 실제 결함이 된 비율을 본다 |
 | 사용자 승인 기준 | 문구 | 되돌리기 어려운 행동은 사람이 정한다 | 빼지 않는다 |
@@ -63,3 +69,16 @@
 - 시험 2의 결함은 직접 심었고, 실제 작성 워커가 만든 결함을 잡은 사례는 아직 없다. 시험 1의 Haiku는 틀린 주석이 있어도 맞게 구현했다.
 - 대조군이 없다. 시험 2의 보고는 단위 테스트만 근거로 들어, Orchestrator의 근거 대조만으로 걸러졌을 수도 있다.
 - 비용은 재지 않았고, 묶음은 2개뿐이라 유지·축소를 판단할 표본이 아니다.
+
+## pstack에서 가져온 것
+
+[pstack](https://github.com/cursor/plugins/tree/main/pstack)(2026-11-06 기준)을 두 번 검토했다. 첫 검토(2026-11-07)에서 작성자·판정자 분리, 시작 계약, 결정 기록, 규칙과 강제 수단 표를 가져왔다. 두 번째 검토(2026-11-10)에서 가져온 것은 다음과 같다.
+
+| 출처 | 들어간 곳 |
+| --- | --- |
+| prove-it-works, 검증 가이드(06-verify-and-ship), bug-fix·feature 플레이북의 "다른 경로·결론 없는 확인은 통과가 아니다" | `implementing-with-tdd`의 "완료 근거", `AGENTS.core.md`의 완료 |
+| shipping 플레이북의 patch-id로 판정 유지 | `worker.md`의 "병합" |
+| orchestrate 플레이북의 "요약이 아니라 결과물을 읽는다", "지금 상태로 보고한다", "띄운 작업을 모두 정산한다" | `orchestrator.md` 4절, 8절 |
+| feature·refactoring·bug-fix 플레이북, architect의 설계 경고 신호, 원칙(model-the-domain, boundary-discipline, make-operations-idempotent, separate-before-serializing-shared-state, fix-root-causes, attack-the-premise, test-behavior-not-implementation, build-the-lever, sequence-verifiable-units, subtract-before-you-add, migrate-callers-then-delete-legacy-apis, minimize-reader-load, explain-the-number) | `implementing-with-tdd` |
+
+가져오지 않은 것: 작업마다 새 서브에이전트를 띄우는 방식(이 하네스는 맥락을 이어받는 세션 재사용을 시험 중이다), 모델 경쟁(arena·swarm·interrogate의 다중 모델, 비용), PR·CI·봇 처리 플레이북(이 하네스는 로컬 병합이다), Cursor 전용 기능.
