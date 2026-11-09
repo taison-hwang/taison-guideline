@@ -11,7 +11,7 @@ herdr로 개발을 자율주행하는 기본 동작만 담은 하네스다. 사�
 | `writing-project-docs`     | 방향 문서, 개발 과정 기록, 작업 계획·상태판, 문서 분할·색인                             |
 | `implementing-with-tdd`    | 실패 테스트 먼저 쓰는 TDD 절차, 뮤테이션 확인, 테스트 작성 규칙                          |
 
-그 밖에 세션 실행기·보고 명령·검사 실행기(`core/bin/`), 역할 주입·컨텍스트·보고 누락 방지·편집 직후 검사 hook(`core/hooks/`), 프로젝트 템플릿(`templates/`)이 있다. 검사를 돌리는 관문은 담지만 TDD 절차와 뮤테이션 확인 기준은 담지만, 검사 명령 자체(린트 도구, 테스트 러너, 뮤테이션 도구)와 언어별 설정은 담지 않는다. 프로젝트가 `harness.env`의 검사 명령, `AGENTS.md`의 "뮤테이션", 전용 스킬로 더한다.
+그 밖에 세션 실행기·보고 명령·검사 실행기·사용량 집계(`core/bin/`), 역할 주입·컨텍스트·보고 누락 방지·편집 직후 검사 hook(`core/hooks/`), 프로젝트 템플릿(`templates/`)이 있다. 검사를 돌리는 관문은 담지만 TDD 절차와 뮤테이션 확인 기준은 담지만, 검사 명령 자체(린트 도구, 테스트 러너, 뮤테이션 도구)와 언어별 설정은 담지 않는다. 프로젝트가 `harness.env`의 검사 명령, `AGENTS.md`의 "뮤테이션", 전용 스킬로 더한다.
 
 컨텍스트 정책의 근거와 검증 결과는 [docs/context-policy.md](docs/context-policy.md), 규칙별 강제 수단과 전제, 독립 검증 시험은 [docs/rules-and-enforcement.md](docs/rules-and-enforcement.md)에 있다.
 
@@ -19,7 +19,7 @@ herdr로 개발을 자율주행하는 기본 동작만 담은 하네스다. 사�
 
 ### 1. 필요한 도구 설치
 
-필요한 것: `hc`(herdr-core), `jq`, `git`, `rsync`, `claude` 또는 `codex`.
+필요한 것: `hc`(herdr-core), `jq`, `git`, `rsync`, `python3`(문서 링크 검사·사용량 집계), `claude` 또는 `codex`.
 
 `hc`는 herdr 앱과 따로 설치한다. herdr 앱은 hc(herdr-core) 위의 클라이언트 중 하나일 뿐이라, herdr 앱만 있으면 `hc` 명령이 없다. 실행기·보고 명령·스킬의 세션 띄우기, 라벨, 메시지가 모두 `hc`를 쓴다.
 
@@ -138,6 +138,29 @@ Commander에게 목표를 말한다. Orchestrator가 없으면 Commander가 띄�
 - 기준은 `--here`를 실행한 herdr 패널이다. 그 패널을 닫았거나 herdr 밖에서 띄웠으면 보기 패널 없이 백그라운드로만 뜬다.
 - 화면이 작으면 `HERDR_MAX_WORKERS`를 줄이거나 `HERDR_VIEW_PANES=0`으로 끈다.
 
+### 토큰 사용량
+
+하네스가 세션과 작업의 연결 정보를 남기고, `herdr-usage`가 Claude transcript와 Codex rollout에서 토큰을 읽어 역할·모델·작업·일자별로 묶는다. 하네스 규칙을 바꾸기 전후를 비교하거나, 역할별 모델 선택이 비용만큼 하는지 볼 때 쓴다.
+
+```bash
+.agents/bin/herdr-usage                                 # 역할·모델별
+.agents/bin/herdr-usage --by task                       # 작업별
+.agents/bin/herdr-usage --by role,day --since 2026-11-09
+.agents/bin/herdr-usage --tsv                           # 기계용(탭 구분)
+```
+
+| 기록 | 누가 언제 | 내용 |
+| --- | --- | --- |
+| `~/.claude/herdr/handoff/<프로젝트>/sessions.tsv` | `session-start.sh` hook, 세션 시작·`/clear`·compact마다 | 시각, 역할, 도구, 모델, session_id, 시작 종류, transcript 경로 |
+| `~/.claude/herdr/handoff/<프로젝트>/reports.tsv` | `herdr-report`, 보고를 보낼 때마다 | 시각, 역할, session_id, 보고 종류, 작업 ID(태그 뒤 첫 낱말), 검사 SHA |
+
+- 대화 본문은 남기지 않는다. 메타데이터만 쓰고, 기록에 실패해도 역할 주입과 보고는 막지 않는다.
+- 중복 제거: Claude는 응답 하나가 줄 여러 개로 남아 `message.id`로, Codex는 `response_id`로 센다. 서브에이전트 기록(`<세션>/subagents/`)도 넣는다.
+- 열 정의: 입력은 캐시를 뺀 입력, 캐시 쓰기는 5분·1시간 TTL 합, 캐시 읽기는 Codex의 `cached_input_tokens`를 입력에서 떼어 낸 값이다. Codex 출력에는 reasoning이 들어 있다.
+- 작업 대응: 같은 세션에서 그 사용 시각 뒤의 첫 보고에 적힌 작업에 붙인다. 마지막 보고 뒤의 사용량은 `(보고 없음)`이다. 작업 ID를 태그 바로 뒤에 쓰는 보고 규칙(`[완료] A-01 …`)을 지켜야 정확하다.
+- 비용: `.agents/config/usage-prices.tsv`(USD/MTok, `--prices`로 바꿀 수 있다)에 있는 모델만 API 단가로 환산한다. 지금은 Claude Opus·Sonnet 5.5만 들어 있다. 구독으로 쓰면 실제 청구액이 아니다.
+- 장부는 이 기능이 들어간 하네스로 `sync`한 뒤 새로 띄운 세션부터 쌓인다. 장부에 있지만 기록 파일을 찾지 못한 세션은 출력 첫 줄에 "기록 없음"으로 나온다.
+
 ### 떠나기, 다시 붙기, 끝내기
 
 Commander는 herdr 패널이 아니라 hc 터미널에서 돈다. 그래서 패널을 닫거나 `ctrl+\`로 떨어져도 세션은 계속 돈다.
@@ -155,7 +178,7 @@ hc kill t3                                                         # 세션 끝�
 bin/harness sync <프로젝트>
 ```
 
-스킬 4개, 실행기, hook, `AGENTS.md`의 표시 블록만 덮어쓴다. 프로젝트 전용 스킬, `harness.env`, `intent.md`, 문서는 그대로 둔다. 파일은 전역이 아니라 프로젝트 안에 설치되므로, 커밋 전에 `git diff`로 바뀐 내용을 확인한다.
+스킬 4개, 실행기, hook, 단가표, `AGENTS.md`의 표시 블록만 덮어쓴다. 프로젝트 전용 스킬, `harness.env`, `intent.md`, 문서는 그대로 둔다. 파일은 전역이 아니라 프로젝트 안에 설치되므로, 커밋 전에 `git diff`로 바뀐 내용을 확인한다.
 
 ## 문제 해결
 
@@ -185,8 +208,9 @@ core/                 프로젝트에 복사되는 원본
   bin/herdr-report    보고 명령
   bin/herdr-view      보기 패널(herdr 탭을 나눠 세션에 보기 전용으로 붙인다)
   bin/herdr-check     검사 실행기(전체 검사·빠른 파일 검사, HEAD별 결과 기록)
+  bin/herdr-usage     토큰 사용량 집계(세션 장부·보고 경계 + transcript)
   hooks/              역할 주입·compact 복구, 소프트 신호, compact 직전 스냅샷, 보고 누락 방지, 편집 직후 검사
-  config/             Claude·Codex hook 설정
+  config/             Claude·Codex hook 설정, 사용량 단가표
 templates/            init 때 한 번만 넣는 파일
 bin/harness           init, sync
 tests/smoke.sh        설치·hook·실행기의 기계적 확인

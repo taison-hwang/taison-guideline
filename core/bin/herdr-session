@@ -99,6 +99,7 @@ EFFORT="${EFFORT_OVERRIDE:-${ENV_EFFORT:-$EFFORT}}"
 # 전역 herdr-context-guard는 비율 기준의 정리 알림을 보내므로 끄고, 프로젝트 hook의 소프트 신호만 쓴다.
 ENVS=(
   "HERDR_ROLE=$ROLE"
+  "HERDR_TOOL=$TOOL"
   "HERDR_PROJECT=$PROJECT"
   "HERDR_HOME=$ROOT"
   "PATH=$ROOT/.agents/bin:$PATH"

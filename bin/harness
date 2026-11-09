@@ -31,7 +31,7 @@ sync_managed() {
   done
   rsync -a --delete "$HARNESS/core/bin/" "$TARGET/.agents/bin/"
   rsync -a --delete "$HARNESS/core/hooks/" "$TARGET/.agents/hooks/"
-  cp "$HARNESS/core/config/claude-slim-settings.json" "$TARGET/.agents/config/"
+  cp "$HARNESS/core/config/claude-slim-settings.json" "$HARNESS/core/config/usage-prices.tsv" "$TARGET/.agents/config/"
   chmod +x "$TARGET"/.agents/bin/* "$TARGET"/.agents/hooks/*
   [[ -e "$TARGET/.claude/skills" ]] || ln -s ../.agents/skills "$TARGET/.claude/skills"
   update_agents_block

@@ -197,6 +197,68 @@ set_env 's/^HERDR_CHECK_CMD=.*/HERDR_CHECK_CMD=/; s/^HERDR_CHECK_FILE_CMD=.*/HER
 rm -f "$D/.worker-1.check" "$D/.worker-1.check.log"
 export PATH="$oldpath"; unset HERDR_ROLE HERDR_PROJECT
 
+echo "== 사용량 기록과 집계"
+D="$HOME/.claude/herdr/handoff/demo"; SS="$P/.agents/hooks/session-start.sh"; U="$P/.agents/bin/herdr-usage"
+rm -f "$D/sessions.tsv" "$D/reports.tsv"
+CL="$WORK/cl"; mkdir -p "$CL/s-claude/subagents"
+# Claude: 응답 하나가 content block마다 같은 usage를 반복 기록한다(m1 두 줄).
+cl_line() { printf '{"type":"assistant","timestamp":"%s","sessionId":"s-claude","message":{"id":"%s","model":"%s","usage":{"input_tokens":%s,"output_tokens":%s,"cache_creation_input_tokens":%s,"cache_creation":{"ephemeral_5m_input_tokens":%s,"ephemeral_1h_input_tokens":%s},"cache_read_input_tokens":%s}}}\n' "$@"; }
+{
+  cl_line 2026-11-09T01:00:00.000Z m1 claude-opus-5-5 10 100 1000 0 1000 5000
+  cl_line 2026-11-09T01:00:00.000Z m1 claude-opus-5-5 10 100 1000 0 1000 5000
+  echo '{"type":"user","timestamp":"2026-11-09T01:05:00.000Z","message":{"content":"x"}}'
+  cl_line 2026-11-09T03:00:00.000Z m2 claude-opus-5-5 1 50 0 0 0 2000
+} >"$CL/s-claude.jsonl"
+cl_line 2026-11-09T01:30:00.000Z m3 claude-sonnet-5-5 2 20 300 300 0 100 >"$CL/s-claude/subagents/agent-a.jsonl"
+# Codex: rollout 이름 끝이 session_id다. usage 레코드에는 모델이 없어 turn_context에서 읽는다.
+CX="$HOME/.codex/sessions/2026/11/09"; mkdir -p "$CX"
+cx_line() { printf '{"timestamp":"%s","type":"token_usage_record","payload":{"session_id":"cx1","response_id":"%s","usage":{"input_tokens":%s,"cached_input_tokens":%s,"cache_write_input_tokens":0,"output_tokens":%s,"reasoning_output_tokens":0,"total_tokens":0}}}\n' "$@"; }
+{
+  echo '{"timestamp":"2026-11-09T01:00:00.000Z","type":"session_meta","payload":{"id":"cx1","cwd":"/x"}}'
+  echo '{"timestamp":"2026-11-09T01:00:01.000Z","type":"turn_context","payload":{"model":"gpt-6.1-sol"}}'
+  cx_line 2026-11-09T01:10:00.000Z r1 1000 800 30
+  cx_line 2026-11-09T01:10:00.000Z r1 1000 800 30
+  cx_line 2026-11-09T02:00:00.000Z r2 500 400 10
+} >"$CX/rollout-2026-11-09T10-00-00-cx1.jsonl"
+start() { printf '{"session_id":"%s","transcript_path":%s,"source":"%s","model":"m"}' "$3" "$4" "$5" | HERDR_ROLE="$1" HERDR_TOOL="$2" HERDR_PROJECT=demo "$SS"; }
+out="$(start worker-1 claude s-claude "\"$CL/s-claude.jsonl\"" startup)"
+check "장부를 남겨도 hook 출력은 JSON" "printf '%s' \"\$out\" | jq -e .hookSpecificOutput.additionalContext >/dev/null"
+start worker-1 claude s-claude "\"$CL/s-claude.jsonl\"" compact >/dev/null
+start verifier-1 codex cx1 null startup >/dev/null
+start orchestrator claude s-gone "\"$WORK/none.jsonl\"" startup >/dev/null
+printf '{"source":"startup"}' | HERDR_ROLE=worker-2 HERDR_PROJECT=demo "$SS" >/dev/null
+check "세션 장부 머리글" "head -n 1 '$D/sessions.tsv' | grep -q '^epoch	time	role	tool	model	session_id	source	transcript'"
+check "세션 시작·compact마다 장부에 한 줄" "[ \"\$(grep -c '	s-claude	' '$D/sessions.tsv')\" = 2 ] && grep -q '	worker-1	claude	m	s-claude	compact	' '$D/sessions.tsv'"
+check "session_id가 없으면 장부에 남기지 않음" "! grep -q 'worker-2' '$D/sessions.tsv'"
+check "역할의 현재 세션 기록" "[ \"\$(cat '$D/.worker-1.session')\" = s-claude ]"
+export HERDR_ROLE=worker-1 HERDR_PROJECT=demo; oldpath="$PATH"; export PATH="$WORK/stub2:$PATH"
+cd "$G"; "$R" "[완료] A-07 요약" >/dev/null 2>&1; cd "$ROOT"
+export PATH="$oldpath"; unset HERDR_ROLE HERDR_PROJECT
+check "보고마다 작업 경계 기록" "tail -n 1 '$D/reports.tsv' | awk -F'\t' '\$3==\"worker-1\" && \$4==\"s-claude\" && \$5==\"완료\" && \$6==\"A-07\"' | grep -q ."
+check "작업 경계 머리글" "head -n 1 '$D/reports.tsv' | grep -q '^epoch	time	role	session_id	tag	task	sha'"
+# 작업 대응 시험용으로 경계를 고정한다: worker-1이 2026-11-09T02:00Z에 A-01을 보고했다.
+printf 'epoch\ttime\trole\tsession_id\ttag\ttask\tsha\n1794189600\tx\tworker-1\ts-claude\t완료\tA-01\t\n' >"$D/reports.tsv"
+row() { TZ=UTC "$U" --project demo --tsv "$@" | awk -F'\t' -v k="$KEY" '$1==k'; }
+KEY=worker-1; r="$(row --by role)"
+check "Claude는 message.id로 중복 제거하고 서브에이전트를 포함" "[ \"\$(printf '%s' \"\$r\" | cut -f2-6)\" = \"\$(printf '3\t13\t1300\t7100\t170')\" ]"
+check "단가표로 API 단가 환산" "[ \"\$(printf '%s' \"\$r\" | cut -f7)\" = 0.013408 ]"
+KEY=verifier-1; r="$(row --by role)"
+check "Codex는 response_id로 중복 제거하고 캐시 읽기를 입력에서 분리" "[ \"\$(printf '%s' \"\$r\" | cut -f2-6)\" = \"\$(printf '2\t300\t0\t1200\t40')\" ]"
+check "단가 없는 모델은 비용을 비움" "[ -z \"\$(printf '%s' \"\$r\" | cut -f7)\" ]"
+KEY=A-01; check "보고 시각까지의 사용량은 그 작업" "[ \"\$(row --by task | cut -f2)\" = 2 ]"
+KEY='(보고 없음)'; check "보고 뒤 사용량은 보고 없음" "[ \"\$(row --by task | cut -f2)\" = 3 ]"
+KEY=claude-sonnet-5-5; check "서브에이전트 모델을 따로 셈" "[ \"\$(row --by model | cut -f2)\" = 1 ]"
+KEY=gpt-6.1-sol; check "Codex 모델은 turn_context에서" "[ \"\$(row --by model | cut -f2)\" = 2 ]"
+KEY=worker-1; check "--since 이전 사용량 제외" "[ \"\$(row --by role --since 2026-11-09T02:30 | cut -f2)\" = 1 ]"
+KEY=2026-11-09; check "일자별" "[ \"\$(row --by day | cut -f2)\" = 5 ]"
+check "여러 기준으로 묶기" "TZ=UTC '$U' --project demo --tsv --by role,model | awk -F'\t' '\$1==\"worker-1\" && \$2==\"claude-opus-5-5\" && \$3==2' | grep -q ."
+tbl="$(TZ=UTC "$U" --project demo)"
+check "기록 없는 세션을 알림" "printf '%s' \"\$tbl\" | grep -q '기록 없음 1개: orchestrator'"
+check "표에 합계" "printf '%s' \"\$tbl\" | grep -q '^합계'"
+check "장부가 없으면 실패" "! '$U' --project nothing >/dev/null 2>&1"
+check "알 수 없는 묶기 기준 거부" "! '$U' --project demo --by color >/dev/null 2>&1"
+check "실행기가 도구를 세션에 알림" "'$P/.agents/bin/herdr-session' --dry-run worker-1 claude | grep -q 'HERDR_TOOL=claude'"
+
 echo "== 실행기"
 S="$P/.agents/bin/herdr-session"
 c="$("$S" --dry-run --task '[배정] A-01' --model sonnet worker-1 claude high)"
