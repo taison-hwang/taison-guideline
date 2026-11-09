@@ -40,11 +40,14 @@ check "코드 안 바꾸는 작업은 처음부터 병행" "grep -q '코드를 �
 check "첫 묶음 병합까지 기다리는 규칙 없음" "! grep -qE '병합까지 통과시킨다|첫 묶음이 병합까지 통과한 뒤' '$O_REF'"
 check "독립 검증은 검사를 기다리지 않고 배정" "grep -q '검사 결과를 기다리지 않고 독립 검증을 배정할 수 있다' '$O_REF'"
 check "병합은 같은 SHA의 검사 PASS와 판정 PASS 둘 다" "grep -qF '같은 SHA에 \`검사 PASS\`와 판정 \`PASS\`가 모두 있을 때만' '$O_REF'"
-check "워커는 긴 검사 전에 커밋 SHA를 알림" "grep -qF '[진행] <작업 ID> 커밋 <SHA> 검사 중' '$W_REF'"
+check "워커는 긴 검사 전에 커밋 SHA와 예상 시간을 알림" "grep -qF '[진행] <작업 ID> 커밋 <SHA> 검사 중 예상 <소요 시간>' '$W_REF'"
 check "사용자 결정은 그 단계만 막음" "grep -q '그 결정이 필요한 단계만 막는다' '$O_REF' && grep -q '그 결정이 필요한 단계만 막는다' '$P/.agents/skills/running-herdr-autopilot/SKILL.md'"
 check "결정을 대신 내리지 않음" "grep -q '결정을 가정해 병합하지 않는다' '$O_REF'"
 check "대기 표에 만료" "grep -qF '| 작업 ID | 기다리는 것 | 시작 | 풀릴 조건 | 만료 | 만료 시 |' '$P/docs/status/status-board.md'"
 check "만료된 대기 처리 순서" "grep -q '만료가 지난 대기' '$O_REF' && grep -q '병행 착수' '$O_REF'"
+check "만료는 소요 시간을 예측한 뒤 정함" "grep -q '소요 시간을 예측한 뒤' '$O_REF' && ! grep -q '기본 30분' '$O_REF'"
+check "만료되면 진행부터 확인하고 진행 중이면 늘림" "grep -q '정상으로 진행 중이면 남은 시간을 다시 예측해' '$O_REF'"
+check "진행을 확인한 연장은 세지 않음" "grep -q '진행을 확인하지 못한 채 두 번 늘렸으면' '$O_REF'"
 check "의존 대기는 만료돼도 다른 세션에 넘기지 않음" "grep -q '1행(의존) 대기는 다른 세션에 넘기지 않는다' '$O_REF'"
 check "연관 없는 작업은 정리 후 배정" "grep -qF '| 연관 없음 | 정리 후 배정 |' '$C_REF'"
 check "연관 작업은 맥락 크기와 무관하게 이어 감" "grep -q '맥락 크기와 compact 횟수는 보지 않는다' '$C_REF'"
@@ -271,6 +274,98 @@ tsv="$(TZ=UTC "$U" --project demo --tsv)"
 check "TSV 첫 줄에 비용 고지 주석" "printf '%s' \"\$tsv\" | head -n 1 | grep -q '^# .*API 단가로 환산.*구독.*단가 없는 모델: gpt-6.1-sol'"
 check "TSV 머리글은 고지 다음 줄" "printf '%s' \"\$tsv\" | sed -n 2p | grep -q '^role	model	responses'"
 check "실행기가 도구를 세션에 알림" "'$P/.agents/bin/herdr-session' --dry-run worker-1 claude | grep -q 'HERDR_TOOL=claude'"
+
+echo "== 검사 결과 이어받기"
+C="$P/.agents/bin/herdr-check"; D="$HOME/.claude/herdr/handoff/demo"
+F="$WORK/flowrepo"; git init -q -b main "$F"; mkdir -p "$F/docs"
+fcommit() { git -C "$F" add -A && git -C "$F" -c user.email=t@t -c user.name=t commit -q -m "$1"; }
+echo count.log >"$F/.gitignore"; echo a >"$F/a.txt"; fcommit code
+set_env 's/^HERDR_CHECK_CMD=.*/HERDR_CHECK_CMD="echo run >>count.log"/; s/^HERDR_CHECK_SKIP_PATHS=.*/HERDR_CHECK_SKIP_PATHS="docs\/* *.md"/' "$P/.agents/harness.env"
+export HERDR_ROLE=worker-7 HERDR_PROJECT=demo
+rm -f "$D/.worker-7.check" "$D/checks.tsv"; cd "$F"
+"$C" >/dev/null 2>&1; base="$(git rev-parse HEAD)"
+check "검사 기록 머리글" "head -n 1 '$D/checks.tsv' | grep -q '^epoch	time	role	session_id	sha	result	seconds'"
+check "검사마다 기록" "tail -n 1 '$D/checks.tsv' | awk -F'\t' '\$3==\"worker-7\" && \$5==\"$base\" && \$6==\"PASS\"' | grep -q ."
+echo d >docs/x.md; echo r >README.md; fcommit docs
+check "건너뛸 경로만 바뀌면 PASS를 이어받음" "[ \"\$('$C' --status)\" = \"PASS \$(git rev-parse HEAD) 이어받음 ${base:0:12}\" ]"
+"$C" >/dev/null 2>&1
+check "이어받으면 검사를 다시 돌리지 않음" "[ \"\$(wc -l <count.log | tr -d ' ')\" = 1 ]"
+check "이어받음도 검사 기록에 남김" "grep -q '	INHERIT	' '$D/checks.tsv'"
+echo b >b.txt; fcommit code2
+check "코드가 바뀌면 이어받지 않음" "[ \"\$('$C' --status)\" = NONE ]"
+"$C" >/dev/null 2>&1; base="$(git rev-parse HEAD)"
+git mv -k b.txt docs/b.txt; fcommit move
+check "코드를 건너뛸 경로로 옮겨도 이어받지 않음" "[ \"\$('$C' --status)\" = NONE ]"
+"$C" >/dev/null 2>&1
+echo w >docs/w.md; fcommit docs-w; echo z >docs/z.md
+check "커밋 안 된 변경이 있으면 이어받지 않음" "[ \"\$('$C' --status)\" = NONE ]"
+rm docs/z.md
+set_env 's/^HERDR_CHECK_SKIP_PATHS=.*/HERDR_CHECK_SKIP_PATHS=/' "$P/.agents/harness.env"
+echo y >docs/y.md; fcommit docs2
+check "건너뛸 경로가 비면 이어받지 않음" "[ \"\$('$C' --status)\" = NONE ]"
+check "검사 시간 제한 기본값은 넉넉하게" "grep -q '^HERDR_CHECK_TIMEOUT=3600' '$P/.agents/harness.env' && grep -q 'HERDR_CHECK_TIMEOUT=3600' '$C'"
+if command -v timeout >/dev/null; then
+  set_env 's/^HERDR_CHECK_CMD=.*/HERDR_CHECK_CMD="sleep 3"/; s/^HERDR_CHECK_TIMEOUT=.*/HERDR_CHECK_TIMEOUT=1/' "$P/.agents/harness.env"
+  echo t >t.txt; fcommit slow; out="$("$C" 2>&1)"
+  check "시간 초과면 지난 PASS 중 가장 긴 검사 시간을 알림" "printf '%s' \"\$out\" | grep -q '시간 초과' && printf '%s' \"\$out\" | grep -q '지난 PASS 중 가장 긴 검사'"
+  set_env 's/^HERDR_CHECK_TIMEOUT=.*/HERDR_CHECK_TIMEOUT=3600/' "$P/.agents/harness.env"
+fi
+set_env 's/^HERDR_CHECK_CMD=.*/HERDR_CHECK_CMD=/' "$P/.agents/harness.env"
+cd "$ROOT"; unset HERDR_ROLE HERDR_PROJECT
+
+echo "== 받은 지시와 판정 기록"
+TURN="$P/.agents/hooks/worker-turn.sh"; R="$P/.agents/bin/herdr-report"
+rm -f "$D/received.tsv"
+printf '{"prompt":"<hc from=\\"t1j\\">[배정] B-01 — 내용"}' | HERDR_ROLE=worker-7 HERDR_PROJECT=demo "$TURN" start
+printf '{"prompt":"[병합] B-01, 판정 PASS"}' | HERDR_ROLE=worker-7 HERDR_PROJECT=demo "$TURN" start
+printf '{"prompt":"그냥 질문"}' | HERDR_ROLE=worker-7 HERDR_PROJECT=demo "$TURN" start
+check "받은 지시 기록 머리글" "head -n 1 '$D/received.tsv' | grep -q '^epoch	time	role	session_id	tag	task'"
+check "배정을 받은 시각 기록" "awk -F'\t' '\$3==\"worker-7\" && \$5==\"배정\" && \$6==\"B-01\"' '$D/received.tsv' | grep -q ."
+check "병합 지시도 기록(작업 ID 뒤 문장부호 제거)" "awk -F'\t' '\$5==\"병합\" && \$6==\"B-01\"' '$D/received.tsv' | grep -q ."
+check "말머리 없는 입력은 기록하지 않음" "[ \"\$(wc -l <'$D/received.tsv' | tr -d ' ')\" = 3 ]"
+PATH="$WORK/stub2:$PATH" HERDR_ROLE=verifier-1 HERDR_PROJECT=demo "$R" "[판정] B-01 ISSUES abc1234 /tmp/v.md" >/dev/null 2>&1
+check "판정 결과와 SHA 기록" "tail -n 1 '$D/reports.tsv' | awk -F'\t' '\$5==\"판정\" && \$6==\"B-01\" && \$7==\"abc1234\" && \$8==\"ISSUES\"' | grep -q ."
+
+echo "== 흐름 측정"
+FL="$HOME/.claude/herdr/handoff/flow"; mkdir -p "$FL"; FLOW="$P/.agents/bin/herdr-flow"
+printf 'epoch\ttime\trole\tsession_id\ttag\ttask\tsha\tresult\n' >"$FL/reports.tsv"
+printf '%s\tx\t%s\ts\t%s\tB-01\t%s\t%s\n' 900 verifier-1 완료 '' '' 1000 worker-1 완료 sha1 '' 1300 verifier-1 판정 sha1 ISSUES 1500 worker-1 완료 sha2 '' 1700 verifier-1 판정 sha2 PASS 2600 worker-1 완료 sha3 '' 3000 worker-2 완료 sha9 '' >>"$FL/reports.tsv"
+sed -i.bak 's/^3000\tx\tworker-2\ts\t완료\tB-01/3000\tx\tworker-2\ts\t완료\tC-01/' "$FL/reports.tsv" && rm -f "$FL/reports.tsv.bak"
+printf 'epoch\ttime\trole\tsession_id\ttag\ttask\n400\tx\tworker-1\ts\t배정\tB-01\n2000\tx\tworker-1\ts\t병합\tB-01\n3100\tx\tworker-3\ts\t배정\tD-01\n3300\tx\tworker-3\ts\t병합\tD-01\n' >"$FL/received.tsv"
+printf '3200\tx\tworker-3\ts\t완료\tD-01\t\t\n' >>"$FL/reports.tsv"
+printf 'epoch\ttime\trole\tsession_id\tsha\tresult\tseconds\n700\tx\tworker-1\ts\tsha1\tPASS\t300\n1400\tx\tworker-1\ts\tsha2\tPASS\t100\n2400\tx\tworker-1\ts\tsha3\tINHERIT\t0\n2900\tx\tworker-2\ts\tsha9\tFAIL\t50\n' >"$FL/checks.tsv"
+check "작업별: 작업·관문 대기·병합 시간, 검사, 판정" "'$FLOW' --project flow --tsv | grep -qxF \"\$(printf 'B-01\t600\t1000\t600\t3\t400\tISSUES>PASS')\""
+check "병합 지시 뒤 완료가 없으면 병합 칸은 비움" "'$FLOW' --project flow --tsv | grep -qxF \"\$(printf 'D-01\t100\t100\t\t0\t0\t')\""
+check "배정 기록이 없으면 그 칸은 비움" "'$FLOW' --project flow --tsv | grep -qxF \"\$(printf 'C-01\t\t\t\t1\t50\t')\""
+ftbl="$("$FLOW" --project flow)"
+check "표에 관문 대기 합계" "printf '%s' \"\$ftbl\" | grep -q '관문 대기 합계 18m20s'"
+check "역할별 검사 요약(이어받음 포함)" "printf '%s' \"\$ftbl\" | grep -E '^worker-1 +3 +2 +0 +1 ' >/dev/null"
+check "기록이 없으면 실패" "! '$FLOW' --project nothing >/dev/null 2>&1"
+
+echo "== 검증자 정원"
+mkdir -p "$WORK/vstub"
+cat >"$WORK/vstub/hc" <<'EOF'
+#!/usr/bin/env bash
+# 전체 4개: orchestrator 1, 워커 2, 검증자(kind=verifier) 1.
+case "$1" in run) echo '{"address":"t9"}'; exit 0 ;; esac
+case "$*" in
+  *role=orchestrator*) echo '{"terminals":[{"address":"t1"}]}' ;;
+  *role=commander*) echo '{"terminals":[]}' ;;
+  *kind=verifier*) echo '{"terminals":[{"address":"t4"}]}' ;;
+  *) echo '{"terminals":[{"address":"t1"},{"address":"t2"},{"address":"t3"},{"address":"t4"}]}' ;;
+esac
+EOF
+chmod +x "$WORK/vstub/hc"
+S="$P/.agents/bin/herdr-session"
+vs() { PATH="$WORK/vstub:$PATH" env -u HERDR_VIEW_ANCHOR "$S" "$@" codex >/dev/null 2>&1; }
+check "세션에 kind 라벨" "'$S' --dry-run verifier-1 codex | grep -q -- '--label kind=verifier' && '$S' --dry-run worker-1 codex | grep -q -- '--label kind=worker'"
+set_env 's/^HERDR_MAX_WORKERS=.*/HERDR_MAX_WORKERS=2/; s/^HERDR_MAX_VERIFIERS=.*/HERDR_MAX_VERIFIERS=1/' "$P/.agents/harness.env"
+check "검증자는 워커 수에 넣지 않음(워커 2/2면 거부)" "! vs worker-3"
+check "검증자 정원이 차면 거부" "! vs verifier-2"
+set_env 's/^HERDR_MAX_VERIFIERS=.*/HERDR_MAX_VERIFIERS=2/' "$P/.agents/harness.env"
+check "워커가 가득 차도 검증자는 정원 안이면 띄움" "vs verifier-2"
+set_env 's/^HERDR_MAX_WORKERS=.*/HERDR_MAX_WORKERS=3/' "$P/.agents/harness.env"
+check "워커는 워커 정원 안이면 띄움" "vs worker-3"
 
 echo "== 실행기"
 S="$P/.agents/bin/herdr-session"

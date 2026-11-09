@@ -50,7 +50,8 @@ bin/harness sync <프로젝트 경로>    # 이미 설치한 프로젝트 갱신
 ```bash
 HERDR_CHECK_CMD="npm run lint && npm run typecheck && npm test"   # 전체 검사
 HERDR_CHECK_FILE_CMD="npx eslint --no-warn-ignored {files}"        # 고친 파일만 빠르게. {files}에 목록이 들어간다
-HERDR_CHECK_TIMEOUT=900                                            # 한 번의 시간 제한(초)
+HERDR_CHECK_TIMEOUT=3600                                           # 한 번의 시간 제한(초). 정상 실행의 가장 긴 시간보다 넉넉하게
+HERDR_CHECK_SKIP_PATHS="docs/* *.md"                               # 이것만 바뀌었으면 앞 PASS를 이어받는다(비우면 안 함)
 ```
 
 | 관문                               | 언제                                                                                                        | 무엇을                                                                                                                                                                                      | 실패하면                                                                          |
@@ -59,6 +60,8 @@ HERDR_CHECK_TIMEOUT=900                                            # 한 번의 
 | `[완료]` 보고 (`herdr-report`) | 워커가 `herdr-report "[완료] …"`를 실행할 때                                                             | worktree면 커밋 안 된 변경이 없는지 확인하고, `HERDR_CHECK_CMD`로 전체 검사. 병합 뒤 메인 체크아웃에서 보내면 다른 세션의 변경이 섞일 수 있어 변경 확인은 건너뛰고 병합된 결과를 검사한다 | 보고를 보내지 않는다. 통과하면 보고 끝에 `검사 PASS <SHA>`를 붙인다             |
 
 - Orchestrator는 `검사 PASS <SHA>`나 `검사 미설정`이 붙지 않은 `[완료]`를 받지 않는다. 워커가 쓴 설명이 아니라 이 기록으로 통과를 판단한다.
+- 마지막 PASS 이후 바뀐 파일이 모두 `HERDR_CHECK_SKIP_PATHS`(glob, `*`는 `/`도 넘는다)에 맞으면 검사를 다시 돌리지 않고 그 PASS를 이어받는다. 보고에는 `검사 PASS <SHA> 이어받음 <앞 SHA>`로 붙는다. 파일 이동은 옮기기 전 경로도 보므로 코드를 문서 폴더로 옮겨도 이어받지 않는다. 검사가 그 파일을 읽으면(문서 링크 검사 등) 넣지 않는다.
+- 시간 제한은 정상 실행의 가장 긴 시간보다 넉넉하게 둔다. 넘기면 FAIL로 끊기고, 지난 PASS 중 가장 긴 검사 시간을 함께 알려 준다.
 - 전체 검사 결과는 HEAD SHA에 묶여 기록된다. 워커가 먼저 `herdr-check`를 돌려 통과했으면 보고 때 다시 돌리지 않는다. 검사가 오래 걸리면 이렇게 나눠 돌린다.
 - `HERDR_CHECK_CMD`가 비어 있으면 막지 않고 보고에 `검사 미설정`을 붙인다. `HERDR_CHECK_FILE_CMD`가 비어 있으면 편집 hook은 아무것도 하지 않는다.
 - 테스트는 편집마다 돌지 않도록 `HERDR_CHECK_FILE_CMD`에 넣지 않는다.
@@ -81,6 +84,8 @@ HERDR_WORKER_EFFORT=high
 HERDR_VERIFIER_TOOL=claude          # 독립 검증자(verifier-*). 작성자와 다른 도구를 권한다
 HERDR_VERIFIER_MODEL=opus
 HERDR_VERIFIER_EFFORT=high
+HERDR_MAX_WORKERS=3                 # 워커 수 상한(검증자는 세지 않는다)
+HERDR_MAX_VERIFIERS=1               # 검증자 수 상한. 검증 대기열이 길면 늘린다
 ```
 
 | 값       | 정하는 순서                                                                                |
@@ -161,6 +166,24 @@ Commander에게 목표를 말한다. Orchestrator가 없으면 Commander가 띄�
 - 비용: `.agents/config/usage-prices.tsv`(USD/MTok, `--prices`로 바꿀 수 있다)에 있는 모델만 API 단가로 환산한다. 지금은 Claude Opus·Sonnet 5.5만 들어 있다. 구독으로 쓰면 실제 청구액이 아니다.
 - 장부는 이 기능이 들어간 하네스로 `sync`한 뒤 새로 띄운 세션부터 쌓인다. 장부에 있지만 기록 파일을 찾지 못한 세션은 출력 첫 줄에 "기록 없음"으로 나온다.
 
+### 작업 흐름과 대기
+
+`herdr-flow`는 작업이 어디서 기다렸는지 잰다. 병렬화 규칙을 바꾼 뒤 효과를 볼 때와, 대기 만료를 정할 때 예측 근거로 쓴다.
+
+```bash
+.agents/bin/herdr-flow                    # 작업별 흐름, 관문 대기 합계, 역할별 검사 시간
+.agents/bin/herdr-flow --since 2026-11-09
+.agents/bin/herdr-flow --tsv              # 작업별 흐름만, 초 단위
+```
+
+| 구간 | 기준 |
+| --- | --- |
+| 작업 | 워커가 `[배정]`을 받고 첫 `[완료]`까지 |
+| 관문 대기 | 첫 `[완료]`부터 `[병합]`을 받을 때까지(검사·독립 검증·병합 순서) |
+| 병합 | `[병합]`을 받고 그 뒤 마지막 `[완료]`까지 |
+
+기록은 같은 폴더의 `received.tsv`(worker-turn hook이 `[배정]`·`[병합]`·`[검증]`을 받은 시각), `reports.tsv`(`[판정]`은 결과와 SHA), `checks.tsv`(`herdr-check`의 시작·걸린 시간·결과, 이어받음은 `INHERIT`)다. 검사는 보고에 적힌 SHA로 작업에 붙인다. 검사 시간에는 프로젝트 검사 명령 안의 잠금 대기가 들어 있다.
+
 ### 떠나기, 다시 붙기, 끝내기
 
 Commander는 herdr 패널이 아니라 hc 터미널에서 돈다. 그래서 패널을 닫거나 `ctrl+\`로 떨어져도 세션은 계속 돈다.
@@ -210,6 +233,7 @@ core/                 프로젝트에 복사되는 원본
   bin/herdr-view      보기 패널(herdr 탭을 나눠 세션에 보기 전용으로 붙인다)
   bin/herdr-check     검사 실행기(전체 검사·빠른 파일 검사, HEAD별 결과 기록)
   bin/herdr-usage     토큰 사용량 집계(세션 장부·보고 경계 + transcript)
+  bin/herdr-flow      작업 흐름과 대기 측정(받은 지시·보고·검사 기록)
   hooks/              역할 주입·compact 복구, 소프트 신호, compact 직전 스냅샷, 보고 누락 방지, 편집 직후 검사
   config/             Claude·Codex hook 설정, 사용량 단가표
 templates/            init 때 한 번만 넣는 파일
