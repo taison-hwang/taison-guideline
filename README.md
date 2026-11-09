@@ -93,8 +93,10 @@ HERDR_MAX_VERIFIERS=1               # 검증자 수 상한. 검증 대기열이 
 | 값       | 정하는 순서                                                                                |
 | -------- | ------------------------------------------------------------------------------------------ |
 | 에이전트 | 실행기 인자(`codex`·`claude`) > `HERDR_<역할>_TOOL`. 둘 다 없으면 실행기가 거부한다 |
-| 모델     | `--model` 인자 > `HERDR_<역할>_MODEL` > 기본 표                                        |
-| effort   | effort 인자 > `HERDR_<역할>_EFFORT` > 기본 표                                            |
+| 모델     | `HERDR_<역할>_MODEL`(있으면 고정) > `--model` 인자 > 기본 표                           |
+| effort   | `HERDR_<역할>_EFFORT`(있으면 고정) > effort 인자 > 기본 표                               |
+
+- harness.env에 모델·effort를 적으면 그 역할의 세션은 늘 그 값으로 뜬다. Orchestrator가 작업에 맞춰 다른 값을 인자로 주면 실행기가 거부한다. 작업마다 Orchestrator가 고르게 하려면 비워 둔다.
 
 - 역할은 `COMMANDER`, `ORCHESTRATOR`, `WORKER`, `VERIFIER`다. `verifier-<n>` 역할은 `VERIFIER` 설정을 쓰고, `HERDR_VERIFIER_TOOL`이 비어 있으면 `WORKER` 설정을 쓴다. 기본 표와 워커 수 상한은 검증자도 워커와 같다.
 - 검증자는 작성자의 맥락에 묶이지 않게 워커와 다른 도구, 상위 모델과 high effort로 두기를 권한다. 비워 두면 Orchestrator가 작성자와 다른 도구를 인자로 적어 띄운다.

@@ -493,8 +493,14 @@ set_env 's/^HERDR_ORCHESTRATOR_TOOL=.*/HERDR_ORCHESTRATOR_TOOL=claude/; s/^HERDR
 check "Orchestrator 도구·모델을 설정에서" "'$S' --dry-run orchestrator | grep -q 'claude .*--model sonnet --effort high'"
 check "워커 도구·모델·effort를 설정에서" "'$S' --dry-run worker-1 | grep -q 'codex --no-daemon .*-m gpt-6.1-terra .*effort=\"xhigh\"'"
 check "검증자도 워커 설정" "'$S' --dry-run verifier-1 | grep -q 'gpt-6.1-terra'"
-check "effort 인자가 설정보다 우선" "'$S' --dry-run worker-1 low | grep -q 'effort=\"low\"'"
-check "--model 인자가 설정보다 우선" "'$S' --dry-run --model gpt-x worker-1 | grep -q -- '-m gpt-x'"
+out="$("$S" --dry-run worker-1 low 2>&1)"; rc=$?
+check "설정과 다른 effort 인자는 거부" "[ $rc = 2 ] && printf '%s' \"\$out\" | grep -q 'HERDR_WORKER_EFFORT'"
+out="$("$S" --dry-run --model gpt-x worker-1 2>&1)"; rc=$?
+check "설정과 다른 --model 인자는 거부" "[ $rc = 2 ] && printf '%s' \"\$out\" | grep -q 'HERDR_WORKER_MODEL'"
+check "설정과 같은 인자는 받음" "'$S' --dry-run --model gpt-6.1-terra worker-1 xhigh | grep -q -- '-m gpt-6.1-terra .*effort=\"xhigh\"'"
+check "설정이 빈 역할은 인자를 받음" "'$S' --dry-run commander codex low | grep -q 'effort=\"low\"'"
+check "Orchestrator 문서: 설정 값은 인자로 바꾸지 않음" "grep -q '올리지 않는다. 다른 값을 적으면 실행기가 거부한다' '$P/.agents/skills/running-herdr-autopilot/references/orchestrator.md'"
+check "SKILL 예시에 effort 인자 없음" "! grep -q 'worker-1 high' '$P/.agents/skills/running-herdr-autopilot/SKILL.md'"
 check "다른 도구를 적으면 설정 모델을 넘기지 않음" "'$S' --dry-run verifier-1 claude | grep -q -- '--model opus --effort medium'"
 check "검증자 설정 비면 워커 설정" "'$S' --dry-run verifier-1 | grep -q 'gpt-6.1-terra'"
 set_env 's/^HERDR_VERIFIER_TOOL=.*/HERDR_VERIFIER_TOOL=claude/; s/^HERDR_VERIFIER_MODEL=.*/HERDR_VERIFIER_MODEL=opus/; s/^HERDR_VERIFIER_EFFORT=.*/HERDR_VERIFIER_EFFORT=xhigh/' "$P/.agents/harness.env"

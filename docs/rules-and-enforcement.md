@@ -10,6 +10,7 @@
 | 세션은 시작·정리 뒤 역할을 받는다 | `SessionStart` hook(`session-start.sh`) | 지침 안내만으로는 전역 스킬을 읽는다(실측) | 전역 스킬을 정리한 뒤 주입을 줄여 본다 |
 | compact 뒤 상태를 복구한다 | `PreCompact`·`SessionStart` hook | compact 요약이 수용 기준과 결정을 잃을 수 있다 | 복구 주입을 끄고 재작업을 비교한다 |
 | 워커 수 상한, 검증자 수 상한은 따로 | 실행기(`herdr-session`, `kind` 라벨). `--here`로 연 패널은 세지 않는다 | 세션이 많으면 비용과 충돌이 늘어난다. 검증자가 워커 자리를 다투면 검증 대기열이 길어진다(zip-viewer 05:46) | 상한을 바꿔 완료 시간과 비용을 잰다(`herdr-flow`, `herdr-usage`) |
+| harness.env에 적힌 역할별 모델·effort는 띄우는 세션이 바꾸지 않는다 | 실행기(`herdr-session`)가 다른 `--model`·effort 인자를 거부한다 | 표 문구만 두면 Orchestrator가 작업 난도를 들어 사용자 설정보다 높은 모델을 고른다(ohmystock: 설정 sonnet/medium인데 워커를 opus high·xhigh로 띄움) | 거부를 경고로 바꾸고 설정과 다른 세션이 생기는지 본다 |
 | 세션은 Commander, Orchestrator, 워커로 나눈다 | 라벨과 실행기, 역할 문구 | 분리가 사용자 맥락과 구현 맥락을 지킨다 | Commander 없이 Orchestrator와 직접 대화한다 |
 | 의존 묶음은 같은 세션, 연관 작업은 맥락 있는 세션에 준다 | 문구, 세션 장부 | 재사용이 새 세션보다 재탐색과 충돌을 줄인다 | 같은 작업을 새 세션 기본으로 돌려 비교한다 |
 | 작업 경계에서 정리하고 작업 중에는 compact에 맡긴다 | 문구, 소프트 신호 | 무관한 맥락은 품질을 떨어뜨리고 매 턴 비용이 된다 | 400k 값을 올려 비용과 재작업을 비교한다 |
