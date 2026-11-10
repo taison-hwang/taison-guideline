@@ -86,4 +86,6 @@
 | orchestrate 플레이북의 "요약이 아니라 결과물을 읽는다", "지금 상태로 보고한다", "띄운 작업을 모두 정산한다" | `orchestrator.md` 4절, 8절 |
 | feature·refactoring·bug-fix 플레이북, architect의 설계 경고 신호, 원칙(model-the-domain, boundary-discipline, make-operations-idempotent, separate-before-serializing-shared-state, fix-root-causes, attack-the-premise, test-behavior-not-implementation, build-the-lever, sequence-verifiable-units, subtract-before-you-add, migrate-callers-then-delete-legacy-apis, minimize-reader-load, explain-the-number) | `implementing-with-tdd` |
 
-가져오지 않은 것: 작업마다 새 서브에이전트를 띄우는 방식(이 하네스는 맥락을 이어받는 세션 재사용을 시험 중이다), 모델 경쟁(arena·swarm·interrogate의 다중 모델, 비용), PR·CI·봇 처리 플레이북(이 하네스는 로컬 병합이다), Cursor 전용 기능.
+2026-11-10에 독립 검증을 검증 세션에서 서브에이전트로 바꾸면서, 검증에 한해 pstack처럼 매번 새 맥락으로 띄운다(`herdr-verify`). 판정자가 앞 판단과 작성자의 맥락에 묶이지 않아야 하고, 검증 세션은 대기열과 중계를 만들었기 때문이다. 구현은 그대로 세션 재사용이다.
+
+가져오지 않은 것: 구현 작업마다 새 서브에이전트를 띄우는 방식(이 하네스는 맥락을 이어받는 세션 재사용을 시험 중이다), 모델 경쟁(arena·swarm·interrogate의 다중 모델, 비용), PR·CI·봇 처리 플레이북(이 하네스는 로컬 병합이다), Cursor 전용 기능.
