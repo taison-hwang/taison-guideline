@@ -29,18 +29,18 @@ check "작업 계획에 시작 계약" "grep -q '완료 조건' '$P/docs/status/
 W_REF="$P/.agents/skills/running-herdr-autopilot/references/worker.md"
 O_REF="$P/.agents/skills/running-herdr-autopilot/references/orchestrator.md"
 C_REF="$P/.agents/skills/managing-session-context/SKILL.md"
-check "검증자는 분리된 worktree에서 실행" "grep -q 'git worktree add --detach' '$W_REF'"
-check "검증자는 분기점 기준으로 범위 확인" "grep -qF 'git diff <분기점 SHA> <head SHA>' '$W_REF'"
-check "검증자는 판정으로 보고" "grep -qF '[판정] <묶음> PASS|ISSUES|BLOCKED' '$W_REF'"
+check "검증 세션 대신 워커가 서브에이전트에 맡김" "grep -q '검증 세션은 띄우지 않는다' '$O_REF' && grep -q '^## 독립 검증' '$W_REF' && ! grep -q '\[검증\]을 받았을 때' '$W_REF'"
+check "검증 서브에이전트는 설정한 도구·모델로(도구 내 서브에이전트로 대신하지 않음)" "grep -q 'HERDR_VERIFIER_' '$W_REF' && grep -q '도구 안의 서브에이전트 기능(Claude의 Agent 등)으로 대신하지 않는다' '$P/.agents/skills/running-herdr-autopilot/SKILL.md'"
+check "오탐은 근거를 넘겨 다시 판정받음" "grep -qF 'herdr-verify --bg --focus' '$W_REF'"
 check "rebase로 패치가 바뀌면 병합 중단" "grep -q '첫 값이 다르면(충돌 해결, 코드 수정, 바로 옆 줄이 바뀐 경우) 병합하지 않는다' '$W_REF'"
-check "PASS 없이 병합 금지" "grep -qF '\`PASS\` 없이 \`[병합]\`을 보내지 않는다' '$O_REF'"
+check "PASS 없이 병합 금지" "grep -qF '판정 \`PASS\` 없이 독립 검증 작업의 \`[병합]\`을 보내지 않는다' '$O_REF'"
 check "판정을 직접 뒤집지 않음" "grep -q '판정을 직접 뒤집지 않는다' '$O_REF'"
 check "BLOCKED는 축소 조건에서 제외" "grep -qF '\`BLOCKED\`는 세지 않는다' '$O_REF'"
 check "첫 묶음은 첫 [완료] 수용까지만 먼저" "grep -qF '첫 \`[완료]\`를 수용 기준과 대조해 받아들인 뒤 나머지 일반 코드 묶음을 배정한다' '$O_REF'"
 check "코드 안 바꾸는 작업은 처음부터 병행" "grep -q '코드를 바꾸지 않는 작업(조사, 스펙, 문서)과 경량 작업은 처음부터' '$O_REF'"
 check "첫 묶음 병합까지 기다리는 규칙 없음" "! grep -qE '병합까지 통과시킨다|첫 묶음이 병합까지 통과한 뒤' '$O_REF'"
-check "독립 검증은 검사를 기다리지 않고 배정" "grep -q '검사 결과를 기다리지 않고 독립 검증을 배정할 수 있다' '$O_REF'"
-check "병합은 같은 SHA의 검사 PASS와 판정 PASS 둘 다" "grep -qF '같은 SHA에 \`검사 PASS\`와 판정 \`PASS\`가 모두 있을 때만' '$O_REF'"
+check "검사와 독립 검증은 함께 뒤에서" "grep -q '검사와 독립 검증은 \`herdr-report\`가 함께 뒤에서 돌린다' '$O_REF'"
+check "ISSUES는 작성 세션이 직접 받음(보완 배정 없음)" "grep -q '작성 세션이 직접 받아 고친다' '$O_REF'"
 check "워커는 긴 검사 전에 커밋 SHA와 예상 시간을 알림" "grep -qF '[진행] <작업 ID> 커밋 <SHA> 검사 중 예상 <소요 시간>' '$W_REF'"
 check "사용자 결정은 그 단계만 막음" "grep -q '그 결정이 필요한 단계만 막는다' '$O_REF' && grep -q '그 결정이 필요한 단계만 막는다' '$P/.agents/skills/running-herdr-autopilot/SKILL.md'"
 check "결정을 대신 내리지 않음" "grep -q '결정을 가정해 병합하지 않는다' '$O_REF'"
@@ -62,7 +62,8 @@ check "빈 세션은 연관 세션이 없을 때만" "grep -qF '| 3 | 연관 높
 check "장부에 다음 예약 칸" "grep -q '| 다음 예약 |' '$O_REF'"
 check "첫 완료만으로 정리하지 않음" "grep -q '첫 \`\[완료\]\`만으로는 정리하지 않는다' '$C_REF'"
 check "CLEAR 요청의 두 경로" "grep -q '소프트 신호에 따른 자기 정리 요청' '$P/.agents/skills/running-herdr-autopilot/SKILL.md'"
-check "검증자 역할은 워커로 처리" "'$P/.agents/bin/herdr-session' --dry-run verifier-1 codex | grep -q 'gpt-6.1-sol'"
+check "검증 세션은 띄우지 않음" "! '$P/.agents/bin/herdr-session' --dry-run verifier-1 codex >/dev/null 2>&1 && { '$P/.agents/bin/herdr-session' --dry-run verifier-1 codex 2>&1 || true; } | grep -q 'herdr-verify'"
+check "Commander 기본값은 claude sonnet medium" "grep -qx 'HERDR_COMMANDER_TOOL=claude' '$P/.agents/harness.env' && '$P/.agents/bin/herdr-session' --dry-run commander | grep -q 'claude .*--model sonnet --effort medium'"
 check "worktree ignore" "grep -qxF '/docs/.worktrees/' '$P/.gitignore'"
 check "graft 파일 ignore" "grep -qxF /graft/ '$P/.gitignore' && grep -qxF /.ignore '$P/.gitignore'"
 check "설정 JSON" "jq -e .hooks.PreCompact '$P/.claude/settings.json' >/dev/null && jq -e .hooks.SessionStart '$P/.codex/hooks.json' >/dev/null"
@@ -80,14 +81,17 @@ check "전용 스킬 유지" "[ -f '$P/.agents/skills/my-own/SKILL.md' ]"
 
 echo "== 새 설정 칸은 sync가 끝에 추가"
 E="$P/.agents/harness.env"
-set_env '/^HERDR_MAX_VERIFIERS=/d; /^HERDR_CHECK_SKIP_PATHS=/d; s/^HERDR_CHECK_TIMEOUT=.*/HERDR_CHECK_TIMEOUT=1800/' "$E"
+set_env '/^HERDR_VERIFY_MAX_ROUNDS=/d; /^HERDR_CHECK_SKIP_PATHS=/d; s/^HERDR_CHECK_TIMEOUT=.*/HERDR_CHECK_TIMEOUT=1800/' "$E"
+echo 'HERDR_MAX_VERIFIERS=1' >>"$E"
 out="$("$ROOT/bin/harness" sync "$P")"
 "$ROOT/bin/harness" sync "$P" >/dev/null
-check "빠진 설정을 기본값으로 추가" "grep -qx 'HERDR_MAX_VERIFIERS=1' '$E' && grep -qx 'HERDR_CHECK_SKIP_PATHS=' '$E'"
-check "추가한 설정의 설명도 함께" "grep -B1 -x 'HERDR_MAX_VERIFIERS=1' '$E' | grep -q '독립 검증자 수' && grep -B1 -x 'HERDR_CHECK_SKIP_PATHS=' '$E' | grep -q '예: HERDR_CHECK_SKIP_PATHS'"
+check "빠진 설정을 기본값으로 추가" "grep -qx 'HERDR_VERIFY_MAX_ROUNDS=3' '$E' && grep -qx 'HERDR_CHECK_SKIP_PATHS=' '$E'"
+check "추가한 설정의 설명도 함께" "grep -B1 -x 'HERDR_VERIFY_MAX_ROUNDS=3' '$E' | grep -q '같은 작업을 검증할 수 있는 횟수' && grep -B1 -x 'HERDR_CHECK_SKIP_PATHS=' '$E' | grep -q '예: HERDR_CHECK_SKIP_PATHS'"
 check "있는 값은 바꾸지 않음" "grep -qx 'HERDR_CHECK_TIMEOUT=1800' '$E' && [ \"\$(grep -c '^HERDR_CHECK_TIMEOUT=' '$E')\" = 1 ]"
-check "다시 sync해도 중복 없음" "[ \"\$(grep -c '^HERDR_MAX_VERIFIERS=' '$E')\" = 1 ] && [ \"\$(grep -c '^HERDR_CHECK_SKIP_PATHS=' '$E')\" = 1 ]"
-check "추가한 칸을 알림" "printf '%s' \"\$out\" | grep -q 'harness.env에 새 설정 추가: HERDR_MAX_VERIFIERS HERDR_CHECK_SKIP_PATHS'"
+check "다시 sync해도 중복 없음" "[ \"\$(grep -c '^HERDR_VERIFY_MAX_ROUNDS=' '$E')\" = 1 ] && [ \"\$(grep -c '^HERDR_CHECK_SKIP_PATHS=' '$E')\" = 1 ]"
+check "추가한 칸을 알림" "printf '%s' \"\$out\" | grep -q 'harness.env에 새 설정 추가: HERDR_VERIFY_MAX_ROUNDS HERDR_CHECK_SKIP_PATHS'"
+check "더 쓰지 않는 설정은 알리기만 하고 지우지 않음" "printf '%s' \"\$out\" | grep -q '더 쓰지 않는 설정: HERDR_MAX_VERIFIERS' && grep -qx 'HERDR_MAX_VERIFIERS=1' '$E'"
+set_env '/^HERDR_MAX_VERIFIERS=/d' "$E"
 set_env 's/^HERDR_CHECK_TIMEOUT=.*/HERDR_CHECK_TIMEOUT=3600/' "$E"
 
 echo "== 기존 프로젝트 보호"
@@ -527,6 +531,83 @@ check "이미 전체 검사한 기본 브랜치 HEAD는 검사용 worktree도 �
 set_env 's/^HERDR_CHECK_CMD=.*/HERDR_CHECK_CMD=/; s/^HERDR_CHECK_AFFECTED_CMD=.*/HERDR_CHECK_AFFECTED_CMD=/' "$P/.agents/harness.env"
 cd "$ROOT"; export PATH="$oldpath"; unset HERDR_ROLE HERDR_PROJECT HC_TERMINAL_ID XDG_CACHE_HOME
 
+echo "== 독립 검증 서브에이전트"
+export HERDR_ROLE=worker-13 HERDR_PROJECT=demo HC_TERMINAL_ID=t13 XDG_CACHE_HOME="$WORK/cache"; oldpath="$PATH"
+V="$WORK/ver"; mkdir -p "$V/bin"
+# 가짜 검증 도구: 인자·환경·위치·받은 지시를 남기고, verdict.next대로 판정 기록을 쓴다(SILENT는 안 씀, SLOW는 오래 돈다)
+cat >"$V/bin/codex" <<AGENT
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >>"$V/agent.log"
+pwd >>"$V/agent.pwd"
+env | grep -E '^(HERDR_ROLE|HC_TERMINAL_ID|CLAUDECODE)=' >>"$V/agent.env"
+cat >"$V/prompt.last"
+v="\$(cat "$V/verdict.next" 2>/dev/null || echo PASS)"
+[ "\$v" = SLOW ] && { sleep 30; v=PASS; }
+[ "\$v" = SILENT ] && exit 0
+printf '판정: %s\n\n- 항목 결과\n' "\$v" >"\$HERDR_VERIFY_RECORD"
+AGENT
+chmod +x "$V/bin/codex"; ln -s codex "$V/bin/claude"
+export PATH="$V/bin:$WORK/stub2:$PATH"
+R="$P/.agents/bin/herdr-report"; C="$P/.agents/bin/herdr-check"; TURN="$P/.agents/hooks/worker-turn.sh"; VF="$P/.agents/bin/herdr-verify"
+set_env "s|^HERDR_CHECK_CMD=.*|HERDR_CHECK_CMD=\"echo full >>$V/full.log; test ! -e broken.txt\"|; s/^HERDR_VERIFIER_TOOL=.*/HERDR_VERIFIER_TOOL=codex/; s/^HERDR_VERIFIER_MODEL=.*/HERDR_VERIFIER_MODEL=gpt-x/; s/^HERDR_VERIFIER_EFFORT=.*/HERDR_VERIFIER_EFFORT=high/" "$P/.agents/harness.env"
+VG="$V/repo"; git init -q -b main "$VG"; echo a >"$VG/a.txt"; git -C "$VG" add -A; git -C "$VG" -c user.email=t@t -c user.name=t commit -q -m init
+vcommit() { git add -A && git -c user.email=t@t -c user.name=t commit -q -m "$1"; }
+assign() { printf '{"prompt":"<hc from=\\"t1\\">[배정] %s — 저장 로직\\n수용 기준: 저장 뒤 다시 읽힌다\\nworktree: %s\\n독립 검증: 저장 뒤 다시 읽기"}' "$1" "$2" | "$TURN" start; }
+git -C "$VG" worktree add -q "$V/v1" -b v1; assign V-01 "$V/v1"; cd "$V/v1"
+echo b >b.txt; vcommit b; v1="$(git rev-parse HEAD)"; : >"$WORK/hc.log"
+"$R" "[완료] V-01 x" >/dev/null 2>&1
+check "판정이 없으면 [완료]를 보내지 않고 검사와 독립 검증을 뒤에서" "grep -q \"send t9 \\[진행\\] V-01 커밋 ${v1:0:12} 검사·독립 검증 중(뒤에서)\" '$WORK/hc.log' && ! grep -q 'send t9 \\[완료\\] V-01' '$WORK/hc.log'"
+wait_for "\\[완료\\] V-01 x" "$WORK/hc.log"
+check "둘 다 PASS면 검사와 판정을 붙여 [완료]를 보냄" "grep -q \"send t9 \\[완료\\] V-01 x · 검사 PASS $v1 · 독립 검증 PASS ${v1:0:12} $D/verify/V-01-${v1:0:12}-1.md\" '$WORK/hc.log'"
+check "검증 도구·모델·effort는 HERDR_VERIFIER_*" "grep -q '^exec .*-m gpt-x -c model_reasoning_effort=\"high\"' '$V/agent.log'"
+check "검증은 작성자 worktree가 아닌 그 SHA의 검증 전용 worktree에서" "grep -qx '$WORK/cache/herdr/verify/demo/worker-13-V-01' '$V/agent.pwd' && [ ! -e '$WORK/cache/herdr/verify/demo/worker-13-V-01' ]"
+check "검증자에게 [배정] 원문을 넘기고 작성자 worktree 경로는 지움" "grep -q '수용 기준: 저장 뒤 다시 읽힌다' '$V/prompt.last' && grep -q '독립 검증: 저장 뒤 다시 읽기' '$V/prompt.last' && ! grep -qF '$V/v1' '$V/prompt.last' && grep -q '작성자 worktree: 쓰지 않는다' '$V/prompt.last'"
+check "범위는 기본 브랜치와 갈라진 곳부터 그 SHA까지" "grep -qF \"git diff \$(git -C '$VG' rev-parse main) $v1\" '$V/prompt.last'"
+check "검증 세션은 이 세션의 역할·주소를 물려받지 않음(hook을 타지 않음)" "[ ! -s '$V/agent.env' ]"
+check "판정을 verdicts.tsv에 남기고 패치로 조회" "awk -F'\t' '\$4==\"V-01\" && \$8==\"PASS\" && \$10==\"codex\" && \$11==\"gpt-x\"' '$D/verdicts.tsv' | grep -q . && '$VF' --status V-01 | grep -q \"^PASS $v1 \""
+# rebase로 SHA만 바뀌고 패치가 같으면 그 판정을 그대로 쓴다
+echo m >"$VG/m.txt"; git -C "$VG" add m.txt; git -C "$VG" -c user.email=t@t -c user.name=t commit -q -m m
+git -c user.email=t@t -c user.name=t rebase -q main; v1b="$(git rev-parse HEAD)"; : >"$WORK/hc.log"
+"$R" "[완료] V-01 rebase" >/dev/null 2>&1
+check "패치가 같으면 다시 검증하지 않고 판정을 붙임" "[ \"\$(wc -l <'$V/agent.log')\" -eq 1 ] && grep -q \"send t9 \\[완료\\] V-01 rebase · 독립 검증 PASS ${v1:0:12} .* · 검사 PASS $v1b\" '$WORK/hc.log'"
+# ISSUES: [완료]는 가지 않고 작성 세션에 [판정], Orchestrator에 [진행]
+git -C "$VG" worktree add -q "$V/v3" -b v3 main; assign V-03 "$V/v3"; cd "$V/v3"
+echo c >c.txt; vcommit c; v3="$(git rev-parse HEAD)"; echo ISSUES >"$V/verdict.next"; : >"$WORK/hc.log"
+"$R" --bg "[완료] V-03 x" >/dev/null 2>&1; wait_for "V-03 커밋 ${v3:0:12} 독립 검증 ISSUES" "$WORK/hc.log"
+check "ISSUES면 [완료]를 보내지 않고 작성 세션에 [판정]과 기록" "grep -q \"send t13 \\[판정\\] V-03 ISSUES ${v3:0:12} $D/verify/V-03-${v3:0:12}-1.md\" '$WORK/hc.log' && grep -q 'send t9 \\[진행\\] V-03 커밋 .* 독립 검증 ISSUES, 작성 세션이 고치는 중' '$WORK/hc.log' && ! grep -q 'send t9 \\[완료\\] V-03' '$WORK/hc.log'"
+: >"$WORK/hc.log"
+check "ISSUES 받은 패치는 다시 보내도 막음" "! '$R' '[완료] V-03 x' >/dev/null 2>&1 && ! grep -q 'V-03' '$WORK/hc.log'"
+echo c2 >>c.txt; vcommit fix; v3b="$(git rev-parse HEAD)"; echo PASS >"$V/verdict.next"; : >"$WORK/hc.log"
+"$R" --bg "[완료] V-03 고침" >/dev/null 2>&1; wait_for "\\[완료\\] V-03 고침" "$WORK/hc.log"
+check "고친 커밋은 앞 기록을 받아 지적 항목과 고친 부분만 다시 봄" "grep -q '\\[다시 검증\\] 같은 작업의 앞 판정은 ISSUES' '$V/prompt.last' && grep -qF 'git diff $v3 $v3b' '$V/prompt.last' && grep -q '판정: ISSUES' '$V/prompt.last'"
+check "다시 받은 PASS로 [완료]" "grep -q \"send t9 \\[완료\\] V-03 고침 · 검사 PASS $v3b · 독립 검증 PASS ${v3b:0:12}\" '$WORK/hc.log'"
+set_env 's/^HERDR_VERIFY_MAX_ROUNDS=.*/HERDR_VERIFY_MAX_ROUNDS=2/' "$P/.agents/harness.env"
+n0="$(wc -l <"$V/agent.log")"; echo c3 >>c.txt; vcommit more; out="$("$VF" V-03 2>&1)"; rc=$?
+check "같은 [배정]의 검증 횟수를 넘으면 거부하고 [차단]을 안내" "[ $rc -eq 5 ] && printf '%s' \"\$out\" | grep -q '검증 횟수 초과(2/2)' && printf '%s' \"\$out\" | grep -q '\\[차단\\]' && [ \"\$(wc -l <'$V/agent.log')\" -eq $n0 ]"
+sleep_until_next_second; assign V-03 "$V/v3"; out="$("$VF" V-03 2>&1)"; rc=$?
+check "새 [배정]은 횟수를 새로 셈" "[ $rc -eq 0 ]"
+set_env 's/^HERDR_VERIFY_MAX_ROUNDS=.*/HERDR_VERIFY_MAX_ROUNDS=3/' "$P/.agents/harness.env"
+# 검사가 실패하면 도는 검증을 취소한다
+git -C "$VG" worktree add -q "$V/v4" -b v4 main; assign V-04 "$V/v4"; cd "$V/v4"
+touch broken.txt; vcommit broken; echo SLOW >"$V/verdict.next"; : >"$WORK/hc.log"
+"$R" --bg "[완료] V-04 x" >/dev/null 2>&1; wait_for "V-04 커밋 .* 검사 FAIL" "$WORK/hc.log"; sleep 1
+check "검사 FAIL이면 검증 서브에이전트를 취소" "! pgrep -f '$V/bin/codex' >/dev/null && ! awk -F'\t' '\$4==\"V-04\"' '$D/verdicts.tsv' | grep -q . && ! grep -q 'V-04 PASS' '$WORK/hc.log'"
+# 판정 줄을 남기지 않으면 BLOCKED, [배정] 원문이 없으면 실행하지 않음
+cd "$V/v1"; echo SILENT >"$V/verdict.next"; printf '목표: x\n' >"$V/crit.txt"; echo d >d.txt; vcommit d
+"$VF" --criteria "$V/crit.txt" V-05 >/dev/null 2>&1; rc=$?
+check "판정 줄이 없으면 BLOCKED로 기록" "[ $rc -eq 4 ] && grep -q '판정 줄을 남기지 않았다' \"\$(ls '$D'/verify/V-05-*-1.md)\""
+check "[배정] 원문이 없으면 실행하지 않음" "! '$VF' V-77 >/dev/null 2>&1 && { '$VF' V-77 2>&1 || true; } | grep -q -- '--criteria'"
+# 검증 설정이 비면 워커 설정(effort high), claude는 -p
+set_env 's/^HERDR_VERIFIER_TOOL=.*/HERDR_VERIFIER_TOOL=/; s/^HERDR_WORKER_TOOL=.*/HERDR_WORKER_TOOL=claude/; s/^HERDR_WORKER_MODEL=.*/HERDR_WORKER_MODEL=sonnet/' "$P/.agents/harness.env"
+echo PASS >"$V/verdict.next"; echo e >e.txt; vcommit e
+"$VF" --criteria "$V/crit.txt" V-06 >/dev/null 2>&1
+check "검증 설정이 비면 워커 설정과 effort high로, claude는 -p" "tail -n 1 '$V/agent.log' | grep -q -- '^-p .*--model sonnet --effort high'"
+: >"$WORK/hc.log"; echo f >f.txt; vcommit f; "$VF" --bg --criteria "$V/crit.txt" V-08 >/dev/null 2>&1
+wait_for "\\[판정\\] V-08 PASS" "$WORK/hc.log"
+check "--bg는 끝나면 이 세션에 [판정]을 보냄" "grep -q 'send t13 \\[판정\\] V-08 PASS' '$WORK/hc.log'"
+set_env 's/^HERDR_CHECK_CMD=.*/HERDR_CHECK_CMD=/; s/^HERDR_WORKER_TOOL=.*/HERDR_WORKER_TOOL=/; s/^HERDR_WORKER_MODEL=.*/HERDR_WORKER_MODEL=/; s/^HERDR_VERIFIER_MODEL=.*/HERDR_VERIFIER_MODEL=/; s/^HERDR_VERIFIER_EFFORT=.*/HERDR_VERIFIER_EFFORT=/' "$P/.agents/harness.env"
+cd "$ROOT"; export PATH="$oldpath"; unset HERDR_ROLE HERDR_PROJECT HC_TERMINAL_ID XDG_CACHE_HOME
+
 echo "== 받은 지시와 판정 기록"
 TURN="$P/.agents/hooks/worker-turn.sh"; R="$P/.agents/bin/herdr-report"
 rm -f "$D/received.tsv"
@@ -537,8 +618,11 @@ check "받은 지시 기록 머리글" "head -n 1 '$D/received.tsv' | grep -q '^
 check "배정을 받은 시각 기록" "awk -F'\t' '\$3==\"worker-7\" && \$5==\"배정\" && \$6==\"B-01\"' '$D/received.tsv' | grep -q ."
 check "병합 지시도 기록(작업 ID 뒤 문장부호 제거)" "awk -F'\t' '\$5==\"병합\" && \$6==\"B-01\"' '$D/received.tsv' | grep -q ."
 check "말머리 없는 입력은 기록하지 않음" "[ \"\$(wc -l <'$D/received.tsv' | tr -d ' ')\" = 3 ]"
-PATH="$WORK/stub2:$PATH" HERDR_ROLE=verifier-1 HERDR_PROJECT=demo "$R" "[판정] B-01 ISSUES abc1234 /tmp/v.md" >/dev/null 2>&1
-check "판정 결과와 SHA 기록" "tail -n 1 '$D/reports.tsv' | awk -F'\t' '\$5==\"판정\" && \$6==\"B-01\" && \$7==\"abc1234\" && \$8==\"ISSUES\"' | grep -q ."
+check "[검증]은 더 기록하지 않음" "printf '{\"prompt\":\"[검증] X-01 묶음\"}' | HERDR_ROLE=worker-7 HERDR_PROJECT=demo '$TURN' start; ! grep -q 'X-01' '$D/received.tsv'"
+printf '{"prompt":"[배정] B-02 — 저장\\n수용 기준: 다시 읽힌다\\n독립 검증: 다시 읽기"}' | HERDR_ROLE=worker-7 HERDR_PROJECT=demo "$TURN" start
+printf '{"prompt":"[배정] B-03 — 저장\\n독립 검증: 없음"}' | HERDR_ROLE=worker-7 HERDR_PROJECT=demo "$TURN" start
+check "[배정]의 독립 검증 요구를 기록(없음이면 기록 안 함)" "awk -F'\t' '\$6==\"B-02\" && \$8==\"필요\"' '$D/received.tsv' | grep -q . && awk -F'\t' '\$6==\"B-03\" && \$8==\"\"' '$D/received.tsv' | grep -q . && awk -F'\t' '\$6==\"B-01\" && \$5==\"배정\" && \$8==\"\"' '$D/received.tsv' | grep -q ."
+check "[배정] 원문을 검증 서브에이전트용으로 남김" "grep -q '수용 기준: 다시 읽힌다' '$D/assign/worker-7/B-02.txt'"
 
 echo "== 보고 대상이 둘일 때"
 mkdir -p "$WORK/stub3"
@@ -564,21 +648,24 @@ printf '3200\tx\tworker-3\ts\t완료\tD-01\t\t\n' >>"$FL/reports.tsv"
 printf '4000\tx\tworker-4\ts\t배정\tE-01\n4200\tx\tworker-4\ts\t병합\tE-01\n' >>"$FL/received.tsv"
 printf '4100\tx\tworker-4\ts\t완료\tE-01\t\t\n4500\tx\tworker-4\ts\t병합완료\tE-01\tshaE\t\n4600\tx\tworker-4\ts\t완료\tE-01\t\t\n' >>"$FL/reports.tsv"
 printf 'epoch\ttime\trole\tsession_id\tsha\tresult\tseconds\tqueue_s\n700\tx\tworker-1\ts\tsha1\tPASS\t300\t600\n1400\tx\tworker-1\ts\tsha2\tPASS\t100\n2400\tx\tworker-1\ts\tsha3\tINHERIT\t0\n2900\tx\tworker-2\ts\tsha9\tFAIL\t50\n' >"$FL/checks.tsv"
-check "작업별: 작업·관문 대기·병합 시간, 검사, 판정" "'$FLOW' --project flow --tsv | grep -qxF \"\$(printf 'B-01\t600\t1000\t600\t3\t400\tISSUES>PASS')\""
-check "병합 지시 뒤 완료가 없으면 병합 칸은 비움" "'$FLOW' --project flow --tsv | grep -qxF \"\$(printf 'D-01\t100\t100\t\t0\t0\t')\""
-check "병합 구간은 [병합완료]까지" "'$FLOW' --project flow --tsv | grep -qxF \"\$(printf 'E-01\t100\t100\t300\t0\t0\t')\""
-check "배정 기록이 없으면 그 칸은 비움" "'$FLOW' --project flow --tsv | grep -qxF \"\$(printf 'C-01\t\t\t\t1\t50\t')\""
+check "작업별: 작업·관문 대기·병합 시간, 검사, 판정(예전 검증 세션의 [판정])" "'$FLOW' --project flow --tsv | grep -qxF \"\$(printf 'B-01\t600\t1000\t600\t3\t400\tISSUES>PASS\t0')\""
+check "병합 지시 뒤 완료가 없으면 병합 칸은 비움" "'$FLOW' --project flow --tsv | grep -qxF \"\$(printf 'D-01\t100\t100\t\t0\t0\t\t0')\""
+check "병합 구간은 [병합완료]까지" "'$FLOW' --project flow --tsv | grep -qxF \"\$(printf 'E-01\t100\t100\t300\t0\t0\t\t0')\""
+check "배정 기록이 없으면 그 칸은 비움" "'$FLOW' --project flow --tsv | grep -qxF \"\$(printf 'C-01\t\t\t\t1\t50\t\t0')\""
+printf 'epoch\ttime\trole\ttask\tbase\tsha\tpatch\tresult\trecord\ttool\tmodel\teffort\tseconds\n4100\tx\tworker-4\tE-01\tb\tshaE1\tp1\tISSUES\tr1\tcodex\tm\thigh\t300\n4150\tx\tworker-4\tE-01\tb\tshaE2\tp2\tPASS\tr2\tcodex\tm\thigh\t120\n' >"$FL/verdicts.tsv"
+check "검증 서브에이전트의 판정과 검증 시간(verdicts.tsv)" "'$FLOW' --project flow --tsv | grep -qxF \"\$(printf 'E-01\t100\t100\t300\t0\t0\tISSUES>PASS\t420')\" && '$FLOW' --project flow | grep -q '독립 검증 2회 · PASS 아님 1회 · 합계 7m00s'"
+rm -f "$FL/verdicts.tsv"
 ftbl="$("$FLOW" --project flow)"
 check "표에 관문 대기 합계" "printf '%s' \"\$ftbl\" | grep -q '관문 대기 합계 20m00s'"
 check "역할별 검사 요약(이어받음 포함)" "printf '%s' \"\$ftbl\" | grep -E '^worker-1 +3 +2 +0 +1 ' >/dev/null"
 check "역할별 대기열 대기 시간(예전 기록은 0)" "printf '%s' \"\$ftbl\" | grep -E '^worker-1 .* 10m00s\$' >/dev/null && printf '%s' \"\$ftbl\" | grep -E '^worker-2 .* 0s\$' >/dev/null"
 check "기록이 없으면 실패" "! '$FLOW' --project nothing >/dev/null 2>&1"
 
-echo "== 검증자 정원"
+echo "== 워커 정원"
 mkdir -p "$WORK/vstub"
-cat >"$WORK/vstub/hc" <<'EOF'
+cat >"$WORK/vstub/hc" <<'EOF2'
 #!/usr/bin/env bash
-# 전체 4개: orchestrator 1, 워커 2, 검증자(kind=verifier) 1.
+# 전체 4개: orchestrator 1, 워커 2, 예전 실행기로 띄운 검증 세션(kind=verifier) 1.
 case "$1" in run) echo '{"address":"t9"}'; exit 0 ;; esac
 case "$*" in
   *role=orchestrator*) echo '{"terminals":[{"address":"t1"}]}' ;;
@@ -586,18 +673,15 @@ case "$*" in
   *kind=verifier*) echo '{"terminals":[{"address":"t4"}]}' ;;
   *) echo '{"terminals":[{"address":"t1"},{"address":"t2"},{"address":"t3"},{"address":"t4"}]}' ;;
 esac
-EOF
+EOF2
 chmod +x "$WORK/vstub/hc"
 S="$P/.agents/bin/herdr-session"
 vs() { PATH="$WORK/vstub:$PATH" env -u HERDR_VIEW_ANCHOR "$S" "$@" codex >/dev/null 2>&1; }
-check "세션에 kind 라벨" "'$S' --dry-run verifier-1 codex | grep -q -- '--label kind=verifier' && '$S' --dry-run worker-1 codex | grep -q -- '--label kind=worker'"
-set_env 's/^HERDR_MAX_WORKERS=.*/HERDR_MAX_WORKERS=2/; s/^HERDR_MAX_VERIFIERS=.*/HERDR_MAX_VERIFIERS=1/' "$P/.agents/harness.env"
-check "검증자는 워커 수에 넣지 않음(워커 2/2면 거부)" "! vs worker-3"
-check "검증자 정원이 차면 거부" "! vs verifier-2"
-set_env 's/^HERDR_MAX_VERIFIERS=.*/HERDR_MAX_VERIFIERS=2/' "$P/.agents/harness.env"
-check "워커가 가득 차도 검증자는 정원 안이면 띄움" "vs verifier-2"
+check "세션에 kind 라벨" "'$S' --dry-run worker-1 codex | grep -q -- '--label kind=worker'"
+set_env 's/^HERDR_MAX_WORKERS=.*/HERDR_MAX_WORKERS=2/' "$P/.agents/harness.env"
+check "워커가 정원이면 거부" "! vs worker-3"
 set_env 's/^HERDR_MAX_WORKERS=.*/HERDR_MAX_WORKERS=3/' "$P/.agents/harness.env"
-check "워커는 워커 정원 안이면 띄움" "vs worker-3"
+check "남아 있는 예전 검증 세션은 워커로 세지 않음" "vs worker-3"
 
 echo "== 실행기"
 S="$P/.agents/bin/herdr-session"
@@ -619,14 +703,12 @@ W="$P/docs/.worktrees/w/.agents/bin/herdr-session"
 check "--here: hc 터미널 밖이면 hc 터미널을 열고 붙는다" "env -u HC_TERMINAL_ID '$S' --dry-run --here commander codex | grep -q '^hc run --bg --json --label role=commander --label project=demo.*&& hc attach'"
 check "--here: hc 터미널 안이면 그 터미널에 라벨" "HC_TERMINAL_ID=t5 '$S' --dry-run --here commander codex | grep -q '^hc label t5 role=commander project=demo'"
 check "워커는 부모(Orchestrator)가 끝나도 남음" "'$S' --dry-run worker-1 codex | grep -q -- '--outlive-parent'"
-check "검증자도 부모가 끝나도 남음" "'$S' --dry-run verifier-1 claude | grep -q -- '--outlive-parent'"
 check "--outlive-parent를 적어도 한 번만 붙음" "[ \"\$('$S' --dry-run --outlive-parent orchestrator codex | grep -o -- '--outlive-parent' | wc -l | tr -d ' ')\" = 1 ]"
 check "도구 생략·설정 없음이면 거부" "! '$S' --dry-run worker-1 >/dev/null 2>&1"
 check "harness.env 템플릿에 역할별 도구 칸" "grep -q '^HERDR_WORKER_TOOL=' '$P/.agents/harness.env' && grep -q '^HERDR_ORCHESTRATOR_TOOL=' '$P/.agents/harness.env'"
 set_env 's/^HERDR_ORCHESTRATOR_TOOL=.*/HERDR_ORCHESTRATOR_TOOL=claude/; s/^HERDR_ORCHESTRATOR_MODEL=.*/HERDR_ORCHESTRATOR_MODEL=sonnet/; s/^HERDR_WORKER_TOOL=.*/HERDR_WORKER_TOOL=codex/; s/^HERDR_WORKER_MODEL=.*/HERDR_WORKER_MODEL=gpt-6.1-terra/; s/^HERDR_WORKER_EFFORT=.*/HERDR_WORKER_EFFORT=xhigh/' "$P/.agents/harness.env"
 check "Orchestrator 도구·모델을 설정에서" "'$S' --dry-run orchestrator | grep -q 'claude .*--model sonnet --effort high'"
 check "워커 도구·모델·effort를 설정에서" "'$S' --dry-run worker-1 | grep -q 'codex --no-daemon .*-m gpt-6.1-terra .*effort=\"xhigh\"'"
-check "검증자도 워커 설정" "'$S' --dry-run verifier-1 | grep -q 'gpt-6.1-terra'"
 out="$("$S" --dry-run worker-1 low 2>&1)"; rc=$?
 check "설정과 다른 effort 인자는 거부" "[ $rc = 2 ] && printf '%s' \"\$out\" | grep -q 'HERDR_WORKER_EFFORT'"
 out="$("$S" --dry-run --model gpt-x worker-1 2>&1)"; rc=$?
@@ -635,11 +717,9 @@ check "설정과 같은 인자는 받음" "'$S' --dry-run --model gpt-6.1-terra 
 check "설정이 빈 역할은 인자를 받음" "'$S' --dry-run commander codex low | grep -q 'effort=\"low\"'"
 check "Orchestrator 문서: 설정 값은 인자로 바꾸지 않음" "grep -q '올리지 않는다. 다른 값을 적으면 실행기가 거부한다' '$P/.agents/skills/running-herdr-autopilot/references/orchestrator.md'"
 check "SKILL 예시에 effort 인자 없음" "! grep -q 'worker-1 high' '$P/.agents/skills/running-herdr-autopilot/SKILL.md'"
-check "다른 도구를 적으면 설정 모델을 넘기지 않음" "'$S' --dry-run verifier-1 claude | grep -q -- '--model opus --effort medium'"
-check "검증자 설정 비면 워커 설정" "'$S' --dry-run verifier-1 | grep -q 'gpt-6.1-terra'"
+check "다른 도구를 적으면 설정 모델을 넘기지 않음" "'$S' --dry-run worker-1 claude | grep -q -- '--model opus --effort medium'"
 set_env 's/^HERDR_VERIFIER_TOOL=.*/HERDR_VERIFIER_TOOL=claude/; s/^HERDR_VERIFIER_MODEL=.*/HERDR_VERIFIER_MODEL=opus/; s/^HERDR_VERIFIER_EFFORT=.*/HERDR_VERIFIER_EFFORT=xhigh/' "$P/.agents/harness.env"
-check "검증자는 검증자 설정" "'$S' --dry-run verifier-1 | grep -q 'claude .*--model opus --effort xhigh'"
-check "워커는 검증자 설정을 쓰지 않음" "'$S' --dry-run worker-1 | grep -q 'codex --no-daemon'"
+check "워커는 검증 설정을 쓰지 않음" "'$S' --dry-run worker-1 | grep -q 'codex --no-daemon'"
 set_env 's/^\(HERDR_[A-Z]*_TOOL\)=.*/\1=/; s/^\(HERDR_[A-Z]*_MODEL\)=.*/\1=/; s/^\(HERDR_[A-Z]*_EFFORT\)=.*/\1=/' "$P/.agents/harness.env"
 check "역할 설정을 다시 비움" "! grep -qE '^HERDR_[A-Z]+_(TOOL|MODEL|EFFORT)=.' '$P/.agents/harness.env'"
 check "worktree에서도 프로젝트 이름 유지" "'$W' --dry-run worker-1 claude | grep -q 'project=demo'"

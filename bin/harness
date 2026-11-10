@@ -7,6 +7,8 @@ set -euo pipefail
 
 HARNESS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MANAGED_SKILLS=(running-herdr-autopilot managing-session-context writing-project-docs implementing-with-tdd)
+# 하네스가 더 읽지 않는 harness.env 설정. sync가 알리기만 하고 지우지 않는다(값은 프로젝트 것이다)
+OBSOLETE_ENV=(HERDR_MAX_VERIFIERS)
 BEGIN='<!-- harness:begin -->'
 END='<!-- harness:end -->'
 
@@ -50,6 +52,9 @@ merge_env() { # 템플릿에 새로 생긴 설정 칸을 바로 위 설명과 �
     { note = "" }
     END { if (keys != "") printf "%s\t%s", substr(keys, 2), block }
   ' "$env" "$template")"
+  local key old=()
+  for key in "${OBSOLETE_ENV[@]}"; do grep -q "^$key=" "$env" && old+=("$key"); done
+  [[ ${#old[@]} -eq 0 ]] || say "harness.env의 더 쓰지 않는 설정: ${old[*]} (하네스가 읽지 않는다. 지워도 된다)"
   [[ -n "$added" ]] || return 0
   printf '%s\n' "${added#*$'\t'}" >>"$env"
   say "harness.env에 새 설정 추가: ${added%%$'\t'*} (기본값이다. 프로젝트에 맞게 고친다)"

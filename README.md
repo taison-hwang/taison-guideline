@@ -67,6 +67,7 @@ HERDR_LIGHT_DENY_PATHS="migrations/* */auth/*"                     # 바꾸면 �
 - 영향 검사(`HERDR_CHECK_AFFECTED_CMD`): 있으면 일반 작업의 `[완료]` 관문은 기본 브랜치와 갈라진 뒤 바뀐 파일(지운 파일 포함)을 넘겨 그 파일에 영향을 받는 검사만 돌리고(`herdr-check --affected <기준>`) `영향 검사 PASS <SHA>`를 붙인다. 전체 검사(전체 회귀)는 `[병합완료]` 뒤 기본 브랜치 HEAD에서 뒤에서 돈다. 프로젝트에 하나씩 차례로 돌고, 차례가 오면 그때의 HEAD를 검사하므로 연달은 병합은 한 번에 덮는다. 실패하면 Orchestrator에 `[진행] <작업 ID> 병합 뒤 전체 검사 FAIL <SHA>`가 간다. 명령이 끝 코드 4(범위를 정할 수 없음: 의존성 목록·빌드 설정 변경 등)를 내면 그 자리에서 전체 검사를 돈다. 고르는 방법은 언어마다 다르다(`templates/harness.env`의 설명). 비우면 관문은 전체 검사다.
 - 경량 작업(`[배정]`에 `등급: 경량`): `[완료]`는 기준과 갈라진 뒤 바뀐 파일 전체에 `HERDR_CHECK_FILE_CMD`만 돌리고(`herdr-check --light`) `가벼운 검사 PASS <SHA>(경량)`을 붙인다. 바뀐 줄이 `HERDR_LIGHT_MAX_LINES`를 넘거나 `HERDR_LIGHT_DENY_PATHS`를 건드리면 전체 검사로 돌린다. `[병합완료]`는 영향 검사와 같이 곧바로 보내고 병합 뒤 전체 검사를 뒤에서 돌린다. 독립 검증도 하지 않는다. 등급은 hook이 `[배정]`에서 읽어 `received.tsv`에 남긴다.
 - Orchestrator는 `검사 PASS <SHA>`, `영향 검사 PASS <SHA>`, `검사 미설정`(경량은 `가벼운 검사 PASS`)이 붙지 않은 `[완료]`를 받지 않는다. 워커가 쓴 설명이 아니라 이 기록으로 통과를 판단한다.
+- 독립 검증(`[배정]`에 `독립 검증: <확인 항목>`): 검증 세션을 따로 두지 않고 워커가 자기 작업마다 검증 서브에이전트(`herdr-verify`)를 띄운다. `HERDR_VERIFIER_*`의 도구·모델·effort로 헤드리스 세션(`codex exec`·`claude -p`)을 그 SHA에 고정한 검증 전용 worktree에서 띄우고, hook이 저장한 `[배정]` 원문과 기본 브랜치와 갈라진 곳부터의 범위만 넘긴다. `[완료]` 관문은 그 패치(`git patch-id`)의 판정 PASS가 있어야 보내고 `독립 검증 PASS <SHA> <기록>`을 붙인다. 판정이 없으면 검사와 함께 뒤에서 돌린다. ISSUES면 워커가 직접 받아 고치고, 다음 검증은 앞 기록을 받아 지적 항목만 본다. `HERDR_VERIFY_MAX_ROUNDS`를 넘으면 `[차단]`이다.
 - 마지막 PASS 이후 바뀐 파일이 모두 `HERDR_CHECK_SKIP_PATHS`(glob, `*`는 `/`도 넘는다)에 맞으면 검사를 다시 돌리지 않고 그 PASS를 이어받는다. 보고에는 `검사 PASS <SHA> 이어받음 <앞 SHA>`로 붙는다. 파일 이동은 옮기기 전 경로도 보므로 코드를 문서 폴더로 옮겨도 이어받지 않는다. 검사가 그 파일을 읽으면(문서 링크 검사 등) 넣지 않는다.
 - 시간 제한은 정상 실행의 가장 긴 시간보다 넉넉하게 둔다. 두 단계의 실행 시간에만 걸고 대기열에서 기다린 시간은 세지 않는다. 넘기면 FAIL로 끊기고, 지난 PASS 중 가장 긴 검사 시간을 함께 알려 준다.
 - 무거운 단계는 이 기계의 모든 프로젝트가 함께 쓰는 대기열(`herdr-queue`) 아래서 돈다. 아래 "공용 검사 대기열"을 본다.
@@ -79,21 +80,24 @@ HERDR_LIGHT_DENY_PATHS="migrations/* */auth/*"                     # 바꾸면 �
 
 #### 역할별 에이전트·모델
 
-Commander, Orchestrator, 워커, 검증자가 쓸 에이전트(codex | claude)와 모델·effort를 `.agents/harness.env`에 정한다. Commander와 Orchestrator는 세션을 띄울 때 도구를 적지 않고 이 값을 따른다. 정하지 않으면 띄우는 세션이 자기와 같은 에이전트를 고르기 쉽다.
+Commander, Orchestrator, 워커, 독립 검증 서브에이전트가 쓸 에이전트(codex | claude)와 모델·effort를 `.agents/harness.env`에 정한다. Commander와 Orchestrator는 세션을 띄울 때 도구를 적지 않고 이 값을 따른다. 정하지 않으면 띄우는 세션이 자기와 같은 에이전트를 고르기 쉽다.
 
 ```bash
-HERDR_COMMANDER_TOOL=codex          # --here commander 에서 도구를 생략하면 쓴다
+HERDR_COMMANDER_TOOL=claude         # --here commander 에서 도구를 생략하면 쓴다(템플릿 기본: claude sonnet medium)
+HERDR_COMMANDER_MODEL=sonnet
+HERDR_COMMANDER_EFFORT=medium
 HERDR_ORCHESTRATOR_TOOL=claude
 HERDR_ORCHESTRATOR_MODEL=opus       # 비우면 실행기 기본 표
 HERDR_ORCHESTRATOR_EFFORT=high
 HERDR_WORKER_TOOL=codex
 HERDR_WORKER_MODEL=gpt-6.1-sol
 HERDR_WORKER_EFFORT=high
-HERDR_VERIFIER_TOOL=claude          # 독립 검증자(verifier-*). 작성자와 다른 도구를 권한다
+HERDR_VERIFIER_TOOL=claude          # 독립 검증 서브에이전트(herdr-verify). 작성자와 다른 도구를 권한다
 HERDR_VERIFIER_MODEL=opus
 HERDR_VERIFIER_EFFORT=high
-HERDR_MAX_WORKERS=3                 # 워커 수 상한(검증자는 세지 않는다)
-HERDR_MAX_VERIFIERS=1               # 검증자 수 상한. 검증 대기열이 길면 늘린다
+HERDR_VERIFY_TIMEOUT=3600           # 검증 한 번의 시간 제한(초). 넘기면 BLOCKED
+HERDR_VERIFY_MAX_ROUNDS=3           # [배정]마다 같은 작업을 검증할 수 있는 횟수
+HERDR_MAX_WORKERS=3                 # 워커 수 상한
 ```
 
 | 값       | 정하는 순서                                                                                |
@@ -104,10 +108,10 @@ HERDR_MAX_VERIFIERS=1               # 검증자 수 상한. 검증 대기열이 
 
 - harness.env에 모델·effort를 적으면 그 역할의 세션은 늘 그 값으로 뜬다. Orchestrator가 작업에 맞춰 다른 값을 인자로 주면 실행기가 거부한다. 작업마다 Orchestrator가 고르게 하려면 비워 둔다.
 
-- 역할은 `COMMANDER`, `ORCHESTRATOR`, `WORKER`, `VERIFIER`다. `verifier-<n>` 역할은 `VERIFIER` 설정을 쓰고, `HERDR_VERIFIER_TOOL`이 비어 있으면 `WORKER` 설정을 쓴다. 기본 표와 워커 수 상한은 검증자도 워커와 같다.
-- 검증자는 작성자의 맥락에 묶이지 않게 워커와 다른 도구, 상위 모델과 high effort로 두기를 권한다. 비워 두면 Orchestrator가 작성자와 다른 도구를 인자로 적어 띄운다.
-- `*_MODEL`·`*_EFFORT`는 실제 도구가 `*_TOOL`과 같을 때만 쓴다. 검증자를 작성자와 다른 도구로 띄우면 그 도구의 기본 표를 쓴다(codex 모델 이름이 claude에 넘어가지 않게).
-- 기본 표: codex는 Commander·Orchestrator `gpt-6.1-terra`/medium, 워커 `gpt-6.1-sol`/high. claude는 Commander `sonnet`/medium, Orchestrator `opus`/high, 워커 `opus`/medium.
+- 세션 역할은 `COMMANDER`, `ORCHESTRATOR`, `WORKER`다. 검증 세션(`verifier-*`)은 띄우지 않는다(실행기가 거부한다). `VERIFIER` 설정은 워커가 띄우는 독립 검증 서브에이전트가 쓴다. `HERDR_VERIFIER_TOOL`이 비어 있으면 워커 설정(effort는 high)을 쓴다.
+- 검증 서브에이전트는 작성자의 맥락에 묶이지 않게 워커와 다른 도구, 상위 모델과 high effort로 두기를 권한다.
+- `*_MODEL`·`*_EFFORT`는 실제 도구가 `*_TOOL`과 같을 때만 쓴다. 다른 도구를 인자로 주면 그 도구의 기본 표를 쓴다(codex 모델 이름이 claude에 넘어가지 않게).
+- 기본 표: codex는 Commander·Orchestrator `gpt-6.1-terra`/medium, 워커 `gpt-6.1-sol`/high, 검증 `gpt-6.1-sol`/high. claude는 Commander `sonnet`/medium, Orchestrator `opus`/high, 워커 `opus`/medium, 검증 `opus`/high.
 - 이미 떠 있는 세션에는 적용되지 않는다. 바꾼 뒤 새로 띄우는 세션부터 쓴다.
 - 어떤 명령이 나가는지는 `.agents/bin/herdr-session --dry-run worker-1`처럼 확인한다.
 
@@ -134,7 +138,7 @@ Commander에게 목표를 말한다. Orchestrator가 없으면 Commander가 띄�
 
 ### 보기 패널
 
-`HERDR_VIEW_PANES=1`(기본)이면 Orchestrator·워커·검증자가 뜰 때마다 실행기가 Commander 패널이 있는 탭을 나눠 그 세션을 보여 준다.
+`HERDR_VIEW_PANES=1`(기본)이면 Orchestrator·워커가 뜰 때마다 실행기가 Commander 패널이 있는 탭을 나눠 그 세션을 보여 준다.
 
 ```
 ┌──────────────┬───────────────────┐
@@ -192,7 +196,7 @@ Commander에게 목표를 말한다. Orchestrator가 없으면 Commander가 띄�
 | 관문 대기 | 첫 `[완료]`부터 `[병합]`을 받을 때까지(검사·독립 검증·병합 순서) |
 | 병합 | `[병합]`을 받고 `[병합완료]`까지(예전 기록은 그 뒤 마지막 `[완료]`까지) |
 
-기록은 같은 폴더의 `received.tsv`(worker-turn hook이 `[배정]`·`[병합]`·`[검증]`을 받은 시각), `reports.tsv`(`[판정]`은 결과와 SHA), `checks.tsv`(`herdr-check`의 결과·실행 시간·공용 대기열에서 기다린 시간, 이어받음은 `INHERIT`)다. 검사는 보고에 적힌 SHA로 작업에 붙인다. 역할별 요약의 '대기열'은 공용 대기열에서 기다린 시간이고, 프로젝트 검사 명령 안에서 직접 잡는 잠금의 대기는 검사 시간에 들어 있다.
+기록은 같은 폴더의 `received.tsv`(worker-turn hook이 `[배정]`·`[병합]`을 받은 시각, 등급, 독립 검증 요구), `reports.tsv`(보낸 보고), `verdicts.tsv`(독립 검증의 판정·도구·모델·걸린 시간), `checks.tsv`(`herdr-check`의 결과·실행 시간·공용 대기열에서 기다린 시간, 이어받음은 `INHERIT`)다. 검사는 보고에 적힌 SHA로 작업에 붙인다. 역할별 요약의 '대기열'은 공용 대기열에서 기다린 시간이고, 프로젝트 검사 명령 안에서 직접 잡는 잠금의 대기는 검사 시간에 들어 있다.
 
 ### 공용 검사 대기열
 
@@ -213,9 +217,9 @@ Commander에게 목표를 말한다. Orchestrator가 없으면 Commander가 띄�
 
 워커는 `herdr-report --bg "[완료] A-01 …"`로 검사를 뒤에서 돌린다. 지금 HEAD를 역할별 검사용 worktree(`~/.cache/herdr/check/<프로젝트>/<역할>`, 설치물 캐시가 남도록 재사용)에서 검사한다.
 
-1. 곧바로 `[진행] A-01 커밋 <SHA> 검사 중(뒤에서) 예상 최대 13m(지난 PASS 8회 중) · 대기열 2건`이 Orchestrator에 간다. Orchestrator는 이때부터 그 SHA로 독립 검증을 배정할 수 있다.
+1. 곧바로 `[진행] A-01 커밋 <SHA> 검사 중(뒤에서) 예상 최대 13m(지난 PASS 8회 중) · 대기열 2건`이 Orchestrator에 간다. 독립 검증 작업이면 `검사·독립 검증 중(뒤에서)`이고, 검증 서브에이전트가 검사와 함께 돈다.
 2. 그동안 워커는 같은 묶음의 다음 작업을 그 커밋 위에 쌓는다. 검사 중인 커밋은 바꾸지 않는다.
-3. PASS면 그 SHA로 `[완료] … · 검사 PASS <SHA>`가 자동으로 간다. FAIL이면 `[완료]`는 가지 않고, 워커 세션에 `[검사 FAIL]`과 로그 경로가, Orchestrator에 "고치는 중"이 간다.
+3. PASS면 그 SHA로 `[완료] … · 검사 PASS <SHA>`(독립 검증 작업은 `· 독립 검증 PASS <SHA> <기록>`도)가 자동으로 간다. 검사 FAIL이면 `[완료]`는 가지 않고(검증도 취소), 워커 세션에 `[검사 FAIL]`과 로그 경로가, Orchestrator에 "고치는 중"이 간다. 판정이 ISSUES·BLOCKED면 워커 세션에 `[판정]`과 기록 경로가 간다.
 
 병합은 여전히 커밋마다 검사 PASS와 판정 PASS가 있어야 하고, 워커는 `[병합]`에 적힌 SHA까지만 병합한다. 쌓은 작업을 옮기는 순서는 `worker.md`에 있다.
 
@@ -252,7 +256,7 @@ bin/harness sync <프로젝트>
 | 보기 패널이 생기지 않는다                                                  | Commander를 `--here`로 herdr 패널에서 띄워야 기준 패널이 생긴다. 이전 실행기로 띄운 Commander는 기준이 없으니 `bin/harness sync` 뒤 다시 띄운다. 그 패널을 닫았어도 생기지 않는다. `HERDR_VIEW_PANES=1`인지 확인한다 |
 | 보기 패널의 화면이 겹치거나 줄이 엉켜 나온다                               | 보기 전용(`--observe`)으로 붙던 이전 실행기다. hc 세션은 200x120으로 그리는데 패널이 작아 깨진다. `bin/harness sync` 뒤 그 패널에서 `ctrl+\`로 떨어지고 `hc attach <주소>`로 다시 붙는다                           |
 | `Transcript saving is off — inherited CLAUDE_CODE_CHILD_SESSION marker` | hc 서버를 Claude Code 안에서 띄워 그 세션의 표지가 물려졌다. 실행기가 띄울 때 지우므로 `bin/harness sync` 뒤 새로 띄운 세션에는 없다. 이미 뜬 세션은 기록이 저장되지 않으니 작업 경계에서 다시 띄운다                    |
-| Orchestrator를 껐더니 워커·검증자도 함께 꺼졌다                          | hc는 `--outlive-parent` 없이 띄운 터미널을 부모와 함께 끝낸다. 지금 실행기는 항상 붙이므로 `bin/harness sync` 뒤 새로 띄운 세션에는 없다. 이전 실행기로 띄운 워커가 남아 있으면 Orchestrator를 끄기 전에 작업 경계에서 워커를 다시 띄운다 |
+| Orchestrator를 껐더니 워커도 함께 꺼졌다                                 | hc는 `--outlive-parent` 없이 띄운 터미널을 부모와 함께 끝낸다. 지금 실행기는 항상 붙이므로 `bin/harness sync` 뒤 새로 띄운 세션에는 없다. 이전 실행기로 띄운 워커가 남아 있으면 Orchestrator를 끄기 전에 작업 경계에서 워커를 다시 띄운다 |
 | 패널을 닫았더니 Commander가 사라진 것 같다                                 | 세션은 hc 터미널에 남아 있다. `hc ls --label "project=<프로젝트 폴더 이름>"`로 찾아 `hc attach`로 붙는다                                                                                                               |
 | `도구를 정하지 못했다`                                                   | 도구 인자가 없고 `.agents/harness.env`의 `HERDR_<역할>_TOOL`도 비어 있다. 값을 채우거나 인자로 `codex`·`claude`를 준다. 예전 `harness.env`에 이 줄이 없으면 `harness sync`가 끝에 빈 칸으로 붙인다                                  |
 | codex가 띄운 명령이 hc 밖에서 돈다                                         | 실행기가 codex에 `--no-daemon`을 붙인다. 예전 실행기면 `bin/harness sync`로 갱신한다                                                                                                                                   |
