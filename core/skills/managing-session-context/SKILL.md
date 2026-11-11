@@ -5,7 +5,7 @@ description: herdr 세션의 컨텍스트 관리 규칙(Codex·Claude 공통). �
 
 # 세션 컨텍스트 관리
 
-원칙: **작업 경계에서 리셋하고, 작업 중에는 compact에 맡기고, 상태는 항상 디스크에 둔다.** 근거는 하네스 저장소의 `docs/context-policy.md`에 있다.
+원칙: **작업 경계에서 리셋하고, 작업 중에는 compact에 맡기고, 상태는 항상 디스크에 둔다.** 근거는 하네스 저장소의 `docs/policy/context-policy.md`에 있다.
 
 | 수단 | 언제 | 누가 |
 | --- | --- | --- |
