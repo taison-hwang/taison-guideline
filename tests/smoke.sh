@@ -2,6 +2,8 @@
 # 하네스 설치·hook·실행기의 기계적 동작을 확인한다. 전역과 실제 세션을 건드리지 않는다.
 # 사용: tests/smoke.sh
 set -uo pipefail
+# 시험은 실제 systemd scope·알림·감시자 서비스를 만들지 않는다(그 동작을 보는 시험만 따로 켠다)
+export HERDR_SCOPE=0 HERDR_NOTIFY=0 HERDR_WATCH=0
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"
 trap '[ -n "${KEEP:-}" ] || rm -rf "$WORK"' EXIT
@@ -120,7 +122,7 @@ check "compact로 내려간 뒤 다시 알림" "[ -n \"\$(fire)\" ]"
 rm -f "$HOME/.claude/herdr/ctx-signal/s1"; usage 300000
 orch="$(fire orchestrator)"
 check "Orchestrator 문구" "printf '%s' \"\$orch\" | grep -q 'CLEAR 요청'"
-check "Orchestrator에 새 배정 보류 안내" "printf '%s' \"\$orch\" | grep -q '새 배정은 정리 뒤로'"
+check "Orchestrator는 정리 대기 중에도 같은 묶음 배정을 계속" "printf '%s' \"\$orch\" | grep -q '같은 묶음의 배정과 \[병합\] 지시는 계속한다'"
 check "role 없으면 무출력" "[ -z \"\$(printf '{\"session_id\":\"s2\",\"transcript_path\":\"$T\"}' | env -u HERDR_ROLE '$H')\" ]"
 
 echo "== compact 복구"
@@ -178,7 +180,47 @@ check "보고에 맥락 크기 자동 첨부" "grep -q 'ctx 123k · compact 0' '
 check "보고하면 막지 않음" "[ -z \"\$(echo '{}' | '$TURN' stop)\" ]"
 check "Orchestrator·Commander는 막지 않음" "[ -z \"\$(echo '{}' | HERDR_ROLE=orchestrator '$TURN' stop)\" ]"
 : >"$WORK/hc.log"
-check "보고 대상 없으면 실패" "! HERDR_ROLE=orchestrator '$R' '[완료] x' >/dev/null 2>&1"
+"$R" "[진행] 시각 확인" >/dev/null 2>&1
+check "보고에 보낸 시각을 붙임" "grep -qE 'compact 0 · [0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}\\)' '$WORK/hc.log'"
+rm -f "$D/pending-decisions.md" "$D/notify.log"
+out="$(HERDR_ROLE=orchestrator "$R" "[차단] D-01 결정 필요" 2>&1)"; rc=$?
+check "Commander가 없으면 pending-decisions.md에 남기고 사용자에게 알림" "[ $rc -eq 0 ] && grep -q '^- .* \[차단\] D-01 결정 필요 (orchestrator' '$D/pending-decisions.md' && grep -q 'Commander 없음: \[차단\]' '$D/notify.log' && printf '%s' \"\$out\" | grep -q 'pending-decisions.md'"
+check "Commander 없음 기록도 보고로 셈(턴 종료 hook)" "[ -s '$D/.orchestrator.reported' ]"
+rm -f "$D/.orchestrator.clear-request"; HERDR_ROLE=orchestrator "$R" "[CLEAR 요청] 소프트 신호" >/dev/null 2>&1
+check "Orchestrator의 [CLEAR 요청]은 감시자가 볼 표시를 남김" "grep -qE '^[0-9]+\$' '$D/.orchestrator.clear-request'"
+mkdir -p "$WORK/nostub"; printf '#!/usr/bin/env bash\necho "$*" >>"%s/hc0.log"\ncase "$1" in ls) echo "{\\"terminals\\":[]}" ;; get) echo "{}" ;; esac\n' "$WORK" >"$WORK/nostub/hc"; chmod +x "$WORK/nostub/hc"
+check "워커는 Orchestrator·Commander가 모두 없으면 실패" "! PATH='$WORK/nostub:$PATH' HERDR_ROLE=worker-1 '$R' '[진행] x' >/dev/null 2>&1"
+mkdir -p "$WORK/cstub"
+cat >"$WORK/cstub/hc" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$WORK/hcc.log"
+case "\$1" in
+  ls) case "\$*" in *role=commander*) echo '{"terminals":[{"address":"t7"}]}' ;; *role=orchestrator*) echo '{"terminals":[{"address":"t9","state":"live","created_ms":5}]}' ;; *) echo '{"terminals":[]}' ;; esac ;;
+  get) echo '{}' ;;
+esac
+EOF
+chmod +x "$WORK/cstub/hc"; : >"$WORK/hcc.log"; rm -f "$D/notify.log"
+PATH="$WORK/cstub:$PATH" HERDR_ROLE=orchestrator "$R" "[차단] D-02 승인 필요" >/dev/null 2>&1
+PATH="$WORK/cstub:$PATH" HERDR_ROLE=orchestrator "$R" "[진행] D-03 x" >/dev/null 2>&1
+check "Commander가 있어도 [차단]은 사용자에게 알림, [진행]은 알리지 않음" "grep -q '^send t7 \[차단\] D-02' '$WORK/hcc.log' && grep -q '차단' '$D/notify.log' && ! grep -q 'D-03' '$D/notify.log'"
+: >"$WORK/hcc.log"; PATH="$WORK/cstub:$PATH" env -u HERDR_ROLE "$P/.agents/bin/herdr-tell" "결정 A로 간다" >/dev/null
+check "herdr-tell은 Orchestrator에 보낸 시각을 붙여 보냄" "grep -qE '^send t9 결정 A로 간다 \(commander [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} 보냄\)' '$WORK/hcc.log'"
+mkdir -p "$WORK/clstub"
+cat >"$WORK/clstub/hc" <<EOF
+#!/usr/bin/env bash
+echo "\$*" >>"$WORK/hccl.log"
+case "\$1" in
+  ls) echo '{"terminals":[{"address":"t61","state":"live","created_ms":5}]}' ;;
+  get) cat "$WORK/clstub.get" ;;
+  read) echo '' ;;
+esac
+EOF
+chmod +x "$WORK/clstub/hc"; : >"$WORK/hccl.log"; echo '{"status":{"app":"claude-code","state":"working"}}' >"$WORK/clstub.get" # 실제 hc get처럼 status는 객체
+PATH="$WORK/clstub:$PATH" "$P/.agents/bin/herdr-clear" --if-idle orchestrator >/dev/null 2>&1; rc=$?
+check "herdr-clear --if-idle은 일하는 세션을 정리하지 않음" "[ $rc -eq 3 ] && ! grep -q '^keys' '$WORK/hccl.log' && [ -f '$D/.orchestrator.clear-request' ]"
+echo '{"status":{"app":"claude-code","state":"done"}}' >"$WORK/clstub.get"
+PATH="$WORK/clstub:$PATH" "$P/.agents/bin/herdr-clear" orchestrator >/dev/null 2>&1; rc=$?
+check "herdr-clear는 /clear를 한 글자씩 치고 재개를 보내며 CLEAR 표시를 지움" "[ $rc -eq 0 ] && grep -qx 'keys t61 / c l e a r enter' '$WORK/hccl.log' && grep -qx 'send t61 재개' '$WORK/hccl.log' && [ ! -f '$D/.orchestrator.clear-request' ] && ! grep -q 'esc' '$WORK/hccl.log'"
 
 echo "== 검사 관문"
 C="$P/.agents/bin/herdr-check"; E="$P/.agents/hooks/check-edit.sh"
@@ -548,6 +590,7 @@ printf '판정: %s\n\n- 항목 결과\n' "\$v" >"\$HERDR_VERIFY_RECORD"
 AGENT
 chmod +x "$V/bin/codex"; ln -s codex "$V/bin/claude"
 export PATH="$V/bin:$WORK/stub2:$PATH"
+export CODEX_HOME="$WORK/codex-none" # 검증 도구 한도는 실제 codex 기록이 아니라 시험이 만든 기록으로 본다
 R="$P/.agents/bin/herdr-report"; C="$P/.agents/bin/herdr-check"; TURN="$P/.agents/hooks/worker-turn.sh"; VF="$P/.agents/bin/herdr-verify"
 set_env "s|^HERDR_CHECK_CMD=.*|HERDR_CHECK_CMD=\"echo full >>$V/full.log; test ! -e broken.txt\"|; s/^HERDR_VERIFIER_TOOL=.*/HERDR_VERIFIER_TOOL=codex/; s/^HERDR_VERIFIER_MODEL=.*/HERDR_VERIFIER_MODEL=gpt-x/; s/^HERDR_VERIFIER_EFFORT=.*/HERDR_VERIFIER_EFFORT=high/" "$P/.agents/harness.env"
 VG="$V/repo"; git init -q -b main "$VG"; echo a >"$VG/a.txt"; git -C "$VG" add -A; git -C "$VG" -c user.email=t@t -c user.name=t commit -q -m init
@@ -595,7 +638,41 @@ check "검사 FAIL이면 검증 서브에이전트를 취소" "! pgrep -f '$V/bi
 # 판정 줄을 남기지 않으면 BLOCKED, [배정] 원문이 없으면 실행하지 않음
 cd "$V/v1"; echo SILENT >"$V/verdict.next"; printf '목표: x\n' >"$V/crit.txt"; echo d >d.txt; vcommit d
 "$VF" --criteria "$V/crit.txt" V-05 >/dev/null 2>&1; rc=$?
-check "판정 줄이 없으면 BLOCKED로 기록" "[ $rc -eq 4 ] && grep -q '판정 줄을 남기지 않았다' \"\$(ls '$D'/verify/V-05-*-1.md)\""
+check "판정 줄이 없으면 ERROR로 기록하고 판정·횟수에 넣지 않음" "[ $rc -eq 6 ] && grep -q '판정 줄을 남기지 않았다' \"\$(ls '$D'/verify/V-05-*-1.md)\" && awk -F'\t' '\$4==\"V-05\" && \$8==\"ERROR\"' '$D/verdicts.tsv' | grep -q . && [ \"\$('$VF' --status V-05)\" = NONE ]"
+"$VF" --criteria "$V/crit.txt" V-05 >/dev/null 2>&1; rc=$?
+check "ERROR 뒤에는 같은 패치를 다시 검증할 수 있음(앞 기록은 덮지 않음)" "[ $rc -eq 6 ] && [ \"\$(ls '$D'/verify/V-05-*.md | wc -l | tr -d ' ')\" = 2 ]"
+n0="$(wc -l <"$V/agent.log")"; out="$("$VF" --criteria "$V/crit.txt" V-05 2>&1)"; rc=$?
+check "ERROR가 HERDR_VERIFY_MAX_ERRORS번 쌓이면 띄우지 않음" "[ $rc -eq 7 ] && printf '%s' \"\$out\" | grep -q '검증 도구 오류 반복' && [ \"\$(wc -l <'$V/agent.log')\" -eq $n0 ]"
+echo PASS >"$V/verdict.next"
+check "--focus면 ERROR 상한 뒤에도 다시 검증" "'$VF' --focus '도구 설정을 고쳤다' --criteria '$V/crit.txt' V-05 >/dev/null 2>&1"
+# 앞 기록이 길면 글자 단위로 자른다(바이트로 자르면 한글이 끊겨 도구가 거절한다)
+echo ISSUES >"$V/verdict.next"; echo g >g.txt; vcommit g
+"$VF" --criteria "$V/crit.txt" V-07 >/dev/null 2>&1
+rec="$(awk -F'\t' '$4 == "V-07" { r = $9 } END { print r }' "$D/verdicts.tsv")"
+python3 -c 'import sys; open(sys.argv[1], "w").write("판정: ISSUES\n" + "가" * 5000)' "$rec"
+echo PASS >"$V/verdict.next"; echo h >h.txt; vcommit h
+"$VF" --criteria "$V/crit.txt" V-07 >/dev/null 2>&1; rc=$?
+check "긴 앞 기록을 넘겨도 프롬프트는 올바른 UTF-8이고 기록 경로를 알려 줌" "[ $rc -eq 0 ] && iconv -f UTF-8 -t UTF-8 '$V/prompt.last' >/dev/null 2>&1 && grep -q '더 필요하면 그 파일을 직접 읽는다' '$V/prompt.last' && grep -q '가가가' '$V/prompt.last'"
+# 검증 도구 한도: codex의 쓴 비율이 기준 이상이면 대체 도구로, 없으면 띄우지 않음
+mkdir -p "$V/codexhome/sessions/2026/11/13"
+printf '{"type":"event_msg","payload":{"type":"token_count","rate_limits":{"limit_id":"codex","primary":{"used_percent":98.0,"window_minutes":10080,"resets_at":%s},"secondary":null}}}\n' "$(($(date +%s) + 3600))" >"$V/codexhome/sessions/2026/11/13/rollout-x.jsonl"
+echo i >i.txt; vcommit i; n0="$(wc -l <"$V/agent.log")"
+out="$(CODEX_HOME="$V/codexhome" "$VF" --criteria "$V/crit.txt" V-09 2>&1)"; rc=$?
+check "codex 한도가 기준 이상이고 대체 도구가 없으면 띄우지 않고 [차단] 안내" "[ $rc -eq 7 ] && printf '%s' \"\$out\" | grep -q 'codex 한도 98%' && [ \"\$(wc -l <'$V/agent.log')\" -eq $n0 ] && [ \"\$('$VF' --status V-09)\" = NONE ]"
+set_env 's/^HERDR_VERIFIER_FALLBACK_TOOL=.*/HERDR_VERIFIER_FALLBACK_TOOL=claude/' "$P/.agents/harness.env"
+CODEX_HOME="$V/codexhome" "$VF" --criteria "$V/crit.txt" V-09 >/dev/null 2>&1; rc=$?
+check "대체 도구가 있으면 그 도구로 검증" "[ $rc -eq 0 ] && tail -n 1 '$V/agent.log' | grep -q -- '^-p .*--model opus --effort high'"
+set_env 's/^HERDR_VERIFIER_FALLBACK_TOOL=.*/HERDR_VERIFIER_FALLBACK_TOOL=/' "$P/.agents/harness.env"
+# 디스크 가드: 여유가 모자라면 캐시를 정리하고, 그래도 모자라면 검사를 보류(끝 코드 5)
+mkdir -p "$WORK/cache/herdr/check/demo/worker-old" "$WORK/cache/herdr/check/demo/worker-busy"; : >"$WORK/cache/herdr/check/demo/worker-busy.lock"
+exec 8>"$WORK/cache/herdr/check/demo/worker-busy.lock"; flock 8
+out="$(HERDR_PROJECT=demo "$P/.agents/bin/herdr-clean" --dry-run)"
+check "herdr-clean --dry-run은 지우지 않고 쓰는 중인 것은 건드리지 않음" "printf '%s' \"\$out\" | grep -q '지움: check/demo/worker-old' && printf '%s' \"\$out\" | grep -q '쓰는 중이라 둔다: check/demo/worker-busy' && [ -d '$WORK/cache/herdr/check/demo/worker-old' ]"
+set_env 's/^HERDR_MIN_DISK_GB=.*/HERDR_MIN_DISK_GB=999999/' "$P/.agents/harness.env"
+echo j >j.txt; vcommit j; out="$("$C" 2>&1)"; rc=$?
+check "디스크 여유가 모자라면 하네스 캐시를 정리하고 검사를 보류" "[ $rc -eq 5 ] && printf '%s' \"\$out\" | grep -q '코드 문제가 아니다' && [ ! -e '$WORK/cache/herdr/check/demo/worker-old' ] && [ -d '$WORK/cache/herdr/check/demo/worker-busy' ]"
+exec 8>&-
+set_env 's/^HERDR_MIN_DISK_GB=.*/HERDR_MIN_DISK_GB=5/' "$P/.agents/harness.env"
 check "[배정] 원문이 없으면 실행하지 않음" "! '$VF' V-77 >/dev/null 2>&1 && { '$VF' V-77 2>&1 || true; } | grep -q -- '--criteria'"
 # 검증 설정이 비면 워커 설정(effort high), claude는 -p
 set_env 's/^HERDR_VERIFIER_TOOL=.*/HERDR_VERIFIER_TOOL=/; s/^HERDR_WORKER_TOOL=.*/HERDR_WORKER_TOOL=claude/; s/^HERDR_WORKER_MODEL=.*/HERDR_WORKER_MODEL=sonnet/' "$P/.agents/harness.env"
@@ -606,7 +683,7 @@ check "검증 설정이 비면 워커 설정과 effort high로, claude는 -p" "t
 wait_for "\\[판정\\] V-08 PASS" "$WORK/hc.log"
 check "--bg는 끝나면 이 세션에 [판정]을 보냄" "grep -q 'send t13 \\[판정\\] V-08 PASS' '$WORK/hc.log'"
 set_env 's/^HERDR_CHECK_CMD=.*/HERDR_CHECK_CMD=/; s/^HERDR_WORKER_TOOL=.*/HERDR_WORKER_TOOL=/; s/^HERDR_WORKER_MODEL=.*/HERDR_WORKER_MODEL=/; s/^HERDR_VERIFIER_MODEL=.*/HERDR_VERIFIER_MODEL=/; s/^HERDR_VERIFIER_EFFORT=.*/HERDR_VERIFIER_EFFORT=/' "$P/.agents/harness.env"
-cd "$ROOT"; export PATH="$oldpath"; unset HERDR_ROLE HERDR_PROJECT HC_TERMINAL_ID XDG_CACHE_HOME
+cd "$ROOT"; export PATH="$oldpath"; unset HERDR_ROLE HERDR_PROJECT HC_TERMINAL_ID XDG_CACHE_HOME CODEX_HOME
 
 echo "== 받은 지시와 판정 기록"
 TURN="$P/.agents/hooks/worker-turn.sh"; R="$P/.agents/bin/herdr-report"
@@ -678,6 +755,11 @@ chmod +x "$WORK/vstub/hc"
 S="$P/.agents/bin/herdr-session"
 vs() { PATH="$WORK/vstub:$PATH" env -u HERDR_VIEW_ANCHOR "$S" "$@" codex >/dev/null 2>&1; }
 check "세션에 kind 라벨" "'$S' --dry-run worker-1 codex | grep -q -- '--label kind=worker'"
+check "세션은 자기 systemd scope에서(herdr-scope)" "'$S' --dry-run worker-1 codex | grep -q 'herdr-scope demo-worker-1 .* -- env '"
+check "하위 폴더에서 띄워도 herdr-scope는 절대 경로(hc run --cwd 기준으로 풀리지 않게)" "(cd '$P/.agents' && bin/herdr-session --dry-run worker-1 codex) | grep -q -- '-- /[^ ]*/herdr-scope '"
+out="$(PATH="$WORK/vstub:$PATH" env -u HERDR_VIEW_ANCHOR "$S" orchestrator codex 2>&1)"; rc=$?
+check "Commander가 없으면 Orchestrator를 띄우지 않고 --here commander를 안내" "[ $rc -eq 2 ] && printf '%s' \"\$out\" | grep -q -- '--here commander'"
+check "--no-commander면 Commander 없이 띄움" "vs --no-commander orchestrator"
 set_env 's/^HERDR_MAX_WORKERS=.*/HERDR_MAX_WORKERS=2/' "$P/.agents/harness.env"
 check "워커가 정원이면 거부" "! vs worker-3"
 set_env 's/^HERDR_MAX_WORKERS=.*/HERDR_MAX_WORKERS=3/' "$P/.agents/harness.env"
@@ -739,6 +821,64 @@ check "워커 상한 초과 거부" "! PATH='$WORK/stub:$PATH' '$S' worker-3 cla
 set_env 's/^HERDR_MAX_WORKERS=.*/HERDR_MAX_WORKERS=3/' "$P/.agents/harness.env"
 check "Orchestrator는 워커 수에 넣지 않음" "PATH='$WORK/stub:$PATH' '$S' worker-3 claude >/dev/null 2>&1; [ \$? -ne 1 ] || ! PATH='$WORK/stub:$PATH' '$S' worker-3 claude 2>&1 | grep -q '이미'"
 
+echo "== 감시자"
+WD="$WORK/wstub.d"; mkdir -p "$WORK/wstub" "$WD"; WLOG="$WORK/hcw.log"; export WD WLOG
+cat >"$WORK/wstub/hc" <<'EOF'
+#!/usr/bin/env bash
+echo "$*" >>"$WLOG"
+all=0; case "$*" in *--all*) all=1 ;; esac
+case "$1" in
+  run) echo '{"address":"t60"}' ;;
+  # 실제 hc처럼 ls는 시각·라벨을 주지 않고 get이 준다. get은 시험 파일의 그 터미널 줄에 get.json을 더한다
+  get) cat "$WD/orch.all" "$WD/orch.live" "$WD/cmd.all" "$WD/cmd.live" "$WD/all" 2>/dev/null |
+         jq -c --arg a "$2" '.terminals[] | select(.address == $a)' | jq -s -c --slurpfile x "$WD/get.json" 'add + $x[0]' ;;
+  ls) case "$*" in
+        *role=orchestrator*) [ $all = 1 ] && cat "$WD/orch.all" || cat "$WD/orch.live" ;;
+        *role=commander*) [ $all = 1 ] && cat "$WD/cmd.all" || cat "$WD/cmd.live" ;;
+        *) [ $all = 1 ] && cat "$WD/all" || echo '{"terminals":[]}' ;;
+      esac ;;
+esac
+EOF
+chmod +x "$WORK/wstub/hc"
+ms=$(($(date +%s) * 1000)); old=$((ms - 7200000))
+empty='{"terminals":[]}'
+echo "$empty" >"$WD/orch.live"; echo "$empty" >"$WD/cmd.live"; echo "$empty" >"$WD/cmd.all"
+printf '{"terminals":[{"address":"t49","state":"finished","reason":"holder_lost","created_ms":1,"finished_ms":%s},{"address":"t50","state":"finished","reason":"holder_lost","created_ms":2,"finished_ms":%s}]}\n' "$old" "$ms" >"$WD/orch.all"
+printf '{"terminals":[{"address":"t50","state":"finished","reason":"holder_lost","finished_ms":%s,"labels":{"role":"orchestrator"}},{"address":"t51","state":"finished","reason":"holder_lost","finished_ms":%s,"labels":{"role":"worker-1"}}]}\n' "$ms" "$ms" >"$WD/all"
+echo '{"argv":["env","HERDR_TOOL=claude","claude"]}' >"$WD/get.json"
+WT="$P/.agents/bin/herdr-watch"; rm -rf "$D/watch" "$D/watch.log" "$D/pending-decisions.md" "$D/.orchestrator.clear-request"; : >"$WLOG"; rm -f "$D/notify.log"
+wo() { PATH="$WORK/wstub:$PATH" HERDR_WATCH=1 HERDR_PROJECT=demo "$WT" --once; }
+date +%s >"$D/.orchestrator.clear-request" # 죽은 Orchestrator가 남긴 정리 요청
+wo
+check "재기동하면 이전 Orchestrator의 [CLEAR 요청]을 지움(재기동 메시지를 정리하지 않게)" "[ ! -f '$D/.orchestrator.clear-request' ]"
+check "holder_lost로 끝난 Orchestrator를 이전 도구로 재개와 함께 다시 띄움" "grep -q '^run --bg --json --outlive-parent --label role=orchestrator .*claude.*재개 — 이전 Orchestrator(t50)가 holder_lost로 끝나' '$WLOG' && grep -q 'worker-1(t51)' '$WLOG' && grep -q 'Orchestrator 자동 재기동' '$D/notify.log'"
+: >"$WLOG"; wo
+check "같은 종료는 한 번만 처리" "! grep -q '^run' '$WLOG'"
+printf '{"terminals":[{"address":"t52","state":"finished","reason":"killed","signal":9,"created_ms":3,"finished_ms":%s}]}\n' "$ms" >"$WD/orch.all"; : >"$WLOG"; wo
+check "hc kill은 SIGKILL로 올라가도(reason killed) 다시 띄우지 않음" "! grep -q '^run' '$WLOG'"
+printf '{"terminals":[{"address":"t54","state":"live","created_ms":5}]}\n' >"$WD/orch.all"; : >"$WLOG"; wo
+check "살아 있는 세션은 처리 끝으로 표시하지 않음" "[ ! -e '$D/watch/handled.t54' ]"
+now=$(date +%s); printf '%s\n%s\n%s\n' "$now" "$now" "$now" >>"$D/watch/restarts"
+printf '{"terminals":[{"address":"t53","state":"finished","reason":"exited","signal":9,"created_ms":4,"finished_ms":%s}]}\n' "$ms" >"$WD/orch.all"; : >"$WLOG"; wo
+check "한 시간 재기동 상한을 넘으면 띄우지 않고 알림" "! grep -q '^run' '$WLOG' && grep -q '자동 재기동 중단' '$D/notify.log'"
+printf -- '- 11-13 10:00 [차단] D-09 결정 필요 (orchestrator)\n' >"$D/pending-decisions.md"; wo
+check "Commander가 없고 전하지 못한 보고가 있으면 사용자에게 알림" "grep -q '결정 요청 1건 대기(Commander 없음)' '$D/notify.log'"
+n="$(grep -c '결정 요청' "$D/notify.log")"; wo
+check "다시 알리기는 HERDR_WATCH_RENOTIFY 간격" "[ \"\$(grep -c '결정 요청' '$D/notify.log')\" = $n ]"
+echo '{"terminals":[{"address":"t61","state":"live","status":"done","created_ms":9}]}' >"$WD/orch.live"; echo '{"status":{"app":"claude-code","state":"done"}}' >"$WD/get.json"
+echo "$(($(date +%s) - 4000))" >"$D/.orchestrator.clear-request"; : >"$WLOG"; wo
+check "처리되지 않은 [CLEAR 요청]은 감시자가 쉬는 Orchestrator를 대신 정리" "grep -qx 'keys t61 / c l e a r enter' '$WLOG' && grep -qx 'send t61 재개' '$WLOG' && [ ! -f '$D/.orchestrator.clear-request' ]"
+echo "$(date +%s)" >"$D/.orchestrator.clear-request"; echo '{"terminals":[{"address":"t7","state":"live"}]}' >"$WD/cmd.live"; : >"$WLOG"; wo
+check "Commander가 있고 시한 전이면 감시자는 정리하지 않음" "! grep -q '^keys' '$WLOG' && [ -f '$D/.orchestrator.clear-request' ]"
+check "HERDR_WATCH=0이면 감시자를 띄우지 않음" "[ -z \"\$(HERDR_WATCH=0 '$WT' --ensure 2>&1)\" ]"
+res="$(echo '{"source":"startup"}' | HERDR_ROLE=commander HERDR_PROJECT=demo "$P/.agents/hooks/session-start.sh" | jq -r '.hookSpecificOutput.additionalContext')"
+check "Commander가 시작하면 전하지 못한 보고를 먼저 전하게 함" "printf '%s' \"\$res\" | grep -q '전하지 못한 보고' && printf '%s' \"\$res\" | grep -q 'pending-decisions.md'"
+rm -rf "$D/watch" "$D/pending-decisions.md" "$D/.orchestrator.clear-request"; unset WD WLOG
+if command -v systemd-run >/dev/null && [ -S "${XDG_RUNTIME_DIR:-/x}/bus" ] && systemctl --user show-environment >/dev/null 2>&1; then
+  check "herdr-scope: 자기 scope에서 메모리 상한을 걸고 끝 코드를 넘김" "out=\$(HERDR_SCOPE=1 '$P/.agents/bin/herdr-scope' smoke 64M -- bash -c 'cat /proc/self/cgroup; exit 7'); [ \$? -eq 7 ] && printf '%s' \"\$out\" | grep -q 'herdr-smoke-.*\\.scope'"
+fi
+check "herdr-scope: HERDR_SCOPE=0이면 그대로 실행" "[ \"\$(HERDR_SCOPE=0 '$P/.agents/bin/herdr-scope' x 1G -- echo ok)\" = ok ]"
+
 echo "== 보기 패널"
 check "--here는 사용자 패널을 기준으로 넘김" "env -u HC_TERMINAL_ID HERDR_PANE_ID=w9:p1 '$S' --dry-run --here commander codex | grep -q 'HERDR_VIEW_ANCHOR=w9:p1'"
 check "자식 세션에 기준 패널 전달" "HERDR_VIEW_ANCHOR=w9:p1 HERDR_PANE_ID=w0:p0 '$S' --dry-run worker-1 codex | grep -q 'HERDR_VIEW_ANCHOR=w9:p1'"
@@ -798,6 +938,8 @@ check "Orchestrator: 말머리로만 상태 판단, 범위는 커밋으로, 완�
 T_REF="$P/.agents/skills/implementing-with-tdd/SKILL.md"
 check "구현 스킬: 설계·작업 종류별·완료 근거" "grep -q '## 코드를 쓰기 전에' '$T_REF' && grep -q '### 리팩터링' '$T_REF' && grep -q '### 버그 수정' '$T_REF' && grep -q '## 완료 근거' '$T_REF' && grep -q '두 가지 가상 편집' '$T_REF'"
 check "Orchestrator: 대기열 순번으로 만료, 급함은 임계 경로만" "grep -q 'herdr-queue urgent' '$O_REF2' && grep -q '임계 경로에만 쓴다' '$O_REF2'"
+check "Commander: 실행기 세션, 전하지 못한 보고, herdr-tell, esc esc 금지" "grep -q 'herdr-tell' '$P/.agents/skills/running-herdr-autopilot/references/commander.md' && grep -q 'pending-decisions.md' '$P/.agents/skills/running-herdr-autopilot/references/commander.md' && grep -q 'esc esc' '$P/.agents/skills/running-herdr-autopilot/references/commander.md' && grep -q 'esc esc' '$P/.agents/skills/managing-session-context/SKILL.md'"
+check "Orchestrator: 감시자와 자동 복구, ERROR는 판정 아님" "grep -q '^## 감시자와 자동 복구' '$O_REF2' && grep -q '\`ERROR\`(검증 도구가 판정 없이 끝남)는 판정이 아니다' '$O_REF2'"
 check "저장소 전체 링크" "python3 -I '$ROOT/core/skills/writing-project-docs/scripts/check_md_links.py' '$ROOT/README.md' '$ROOT/core' '$ROOT/docs' '$ROOT/templates' >/dev/null"
 check "설치된 docs 색인" "python3 -I '$ROOT/core/skills/writing-project-docs/scripts/check_md_links.py' '$P/docs' >/dev/null"
 

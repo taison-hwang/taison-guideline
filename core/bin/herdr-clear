@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# 세션을 정리(/clear)하고 다음 메시지를 보낸다(managing-session-context의 "정리 실행"). 실행기가 PATH에 넣는다.
+#   herdr-clear <역할>                       쉬기를 기다려 /clear 뒤 "재개"를 보낸다
+#   herdr-clear --send "<메시지>" <역할>     /clear 뒤 그 메시지(예: [배정] …)를 보낸다
+#   herdr-clear --if-idle <역할>             지금 쉬고 있을 때만 한다. 바쁘면 끝 코드 3(감시자가 쓴다)
+# /clear는 hc send로 보내면 <hc from>에 싸여 명령으로 듣지 않으므로 hc keys로 한 글자씩 친다.
+# Claude 세션에 esc를 두 번 보내지 않는다(되감기 창이 열린다). 입력창 정리는 이 명령에 맡긴다.
+# Orchestrator 정리가 끝나면 [CLEAR 요청] 표시(<handoff>/.orchestrator.clear-request)를 지운다.
+set -uo pipefail
+BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+next="재개" idle_only=0
+while [[ $# -gt 0 && "$1" == --* ]]; do
+  case "$1" in
+    --send) [[ $# -ge 2 ]] || exit 2; next="$2"; shift ;;
+    --if-idle) idle_only=1 ;;
+    *) exit 2 ;;
+  esac
+  shift
+done
+[[ $# -eq 1 && -n "$1" ]] || { sed -n '2,5p' "${BASH_SOURCE[0]}" | sed 's/^# *//' >&2; exit 2; }
+role="$1"
+project="${HERDR_PROJECT:-}"
+if [[ -z "$project" ]]; then
+  common="$(git -C "$BIN" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || { echo "프로젝트를 정하지 못했다" >&2; exit 2; }
+  project="$(basename "$(dirname "$common")")"
+fi
+dir="$HOME/.claude/herdr/handoff/$project"
+latest() { # 역할 → 그 역할의 살아 있는 세션 중 가장 최근에 띄운 것. hc ls는 시각을 주지 않아 hc get으로 본다
+  local a m best="" bm=-1
+  for a in $(hc ls --json --label "project=$project" --label "role=$1" 2>/dev/null | jq -r '.terminals[]?.address'); do
+    m="$(hc get "$a" --json 2>/dev/null | jq -r '.created_ms // 0' 2>/dev/null)"
+    [[ "${m:-0}" -gt "$bm" ]] && { best="$a"; bm="${m:-0}"; }
+  done
+  printf '%s' "$best"
+}
+t="$(latest "$role")"
+[[ -n "$t" ]] || { echo "$project의 $role 세션을 찾지 못했다" >&2; exit 1; }
+# hc get은 status를 {"app": …, "state": "done"|"working"} 객체로, hc ls는 문자열로 준다
+status_of() { hc get "$t" --json 2>/dev/null | jq -r '.status | if type == "object" then .state else . end // empty'; }
+if [[ $idle_only -eq 1 ]]; then
+  [[ "$(status_of)" == "done" ]] || { echo "$role($t)이 일하는 중이라 정리하지 않았다" >&2; exit 3; }
+else
+  hc wait "$t" >/dev/null 2>&1
+fi
+hc keys "$t" / c l e a r enter >/dev/null || { echo "$t 에 /clear를 치지 못했다" >&2; exit 1; }
+sleep 2
+hc wait "$t" >/dev/null 2>&1
+if hc read "$t" 2>/dev/null | tail -n 30 | grep -aq 'is disabled'; then
+  echo "$role($t)이 /clear를 거부했다(작업 중). 끝나기를 기다렸다가 다시 한다" >&2
+  exit 3
+fi
+hc send "$t" "$next" >/dev/null || { echo "$t 에 '$next'를 보내지 못했다" >&2; exit 1; }
+[[ "$role" == orchestrator ]] && rm -f "$dir/.orchestrator.clear-request"
+rm -f "$dir/.$role.ctx" "$dir/.$role.compacts"
+echo "정리함: $role($t), 보냄: ${next:0:60}"

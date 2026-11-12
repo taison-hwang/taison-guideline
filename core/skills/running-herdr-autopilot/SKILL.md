@@ -62,6 +62,8 @@ description: herdr 자율주행 운영 규칙(Codex·Claude 공통). Commander·
 
 도구(codex|claude)는 적지 않는다. 실행기가 `.agents/harness.env`의 `HERDR_<역할>_TOOL`(역할: COMMANDER, ORCHESTRATOR, WORKER)과 그 모델·effort를 쓴다. harness.env에 모델·effort가 있으면 사용자가 정한 값이므로 `--model`과 effort 인자도 적지 않는다(실행기가 거부한다). 자기 도구와 같은 도구를 고르지 않는다. 도구를 적는 경우는 둘뿐이다: 설정이 비어 실행기가 거부할 때, 도구 오류로 바꿀 때. 검증 세션(`verifier-*`)은 띄우지 않는다(실행기가 거부한다).
 
+Orchestrator는 같은 `project`의 Commander가 있어야 띄울 수 있다(실행기가 거부한다). 없으면 보고와 결정 요청이 사용자에게 닿지 않는다. 세션은 각자 systemd 사용자 scope에서 돌고, Commander·Orchestrator를 띄우면 hc 밖의 감시자(`herdr-watch`)가 함께 뜬다(`references/orchestrator.md`의 "감시자와 자동 복구").
+
 `--here`로 띄운 Commander의 herdr 패널이 있으면, 실행기가 Orchestrator·워커를 띄울 때 그 옆에 보기 패널을 자동으로 나눈다(`HERDR_VIEW_PANES`). 보기 패널을 직접 만들거나 닫지 않는다.
 
 ```bash
@@ -94,6 +96,7 @@ hc ls --label "project=$HERDR_PROJECT" --label role=worker-1 | jq -r '.terminals
 | `재개` | 정리한 쪽 → 정리된 세션 | 작업 상태 파일을 읽고 이어 간다 |
 
 - 보고는 `herdr-report "[완료] <요약>"`로 한다. 말머리는 지금 상태 그대로 고른다. 받는 쪽은 말머리로 완료를 판단하므로, 검사를 피하려고 다른 말머리로 대신하거나 `hc send`로 직접 보내지 않는다. 실행기가 PATH에 넣어 둔 명령으로, 받는 세션을 찾아 보내고 맥락 크기와 compact 횟수를 자동으로 붙인다. 긴 내용은 파일로 남기고 경로만 보낸다.
+- Commander가 Orchestrator에 보낼 때는 `herdr-tell "<메시지>"`로 한다. 보낸 시각이 자동으로 붙는다. `herdr-report`도 보고에 보낸 시각을 붙인다. 메시지 안에 시각을 추측해 적지 않는다.
 - 배정·병합 지시는 `hc send <t> "[배정] <내용>"`로 한다. 답이 필요 없는 메시지는 워커에게 보내지 않는다. 받는 쪽은 매 턴 맥락 전체를 다시 읽으므로 메시지 한 건도 비용이다.
 - **세션 화면에 쓴 글은 아무도 읽지 않는다.** 전할 내용은 반드시 위 명령으로 보낸다. 워커의 턴은 모두 보고로 끝나고, Orchestrator·Commander는 답이 필요 없는 보고에 답장하지 않는다.
 - 메시지와 보고는 한국어로 쓴다.

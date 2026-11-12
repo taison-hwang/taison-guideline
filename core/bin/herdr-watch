@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+# 프로젝트 감시자. hc 밖(systemd 사용자 서비스)에서 돌며, 사용자가 자리에 없어도 자율주행이 멈추지 않게 한다.
+#   herdr-watch --ensure   감시자가 없으면 띄운다(herdr-session이 Commander·Orchestrator를 띄울 때 부른다)
+#   herdr-watch --status   감시자 상태
+#   herdr-watch --stop     감시자를 끈다
+#   herdr-watch --once     한 번만 살핀다(수동 확인·테스트)
+# 살피는 것(HERDR_WATCH_INTERVAL초마다):
+#   1. Orchestrator가 비정상으로 끝났으면(hc holder가 죽음 holder_lost, SIGKILL·OOM) "재개"로 다시 띄운다.
+#      hc kill이나 정상 종료는 사용자·Commander의 뜻이므로 다시 띄우지 않는다. 한 시간에 HERDR_WATCH_MAX_RESTARTS번까지.
+#   2. Commander가 없고 전하지 못한 결정 요청(<handoff>/pending-decisions.md)이 있으면 사용자에게 알린다.
+#      HERDR_WATCH_RENOTIFY초마다 다시 알린다. Commander가 holder_lost로 끝났으면 다시 띄우라고 알린다.
+#   3. Orchestrator의 [CLEAR 요청]이 Commander에 닿지 않았거나 HERDR_CLEAR_TIMEOUT초 동안 처리되지 않았으면,
+#      Orchestrator가 쉴 때 대신 정리(herdr-clear orchestrator)하고 "재개"를 보낸다.
+# hc holder와 다른 cgroup에서 돌아야 holder가 OOM으로 죽어도 남는다. systemd가 없으면 setsid로 띄운다(holder와 같이 죽을 수 있다).
+# 프로젝트에 살아 있는 세션도, 할 일도 없이 HERDR_WATCH_IDLE_EXIT초가 지나면 스스로 끝난다.
+# 기록: <handoff>/watch.log
+set -uo pipefail
+BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SELF="$BIN/herdr-watch"
+if common="$(git -C "$BIN" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then ROOT="$(dirname "$common")"; else ROOT="$(cd "$BIN/../.." && pwd)"; fi
+PROJECT="${HERDR_PROJECT:-$(basename "$ROOT")}"
+dir="$HOME/.claude/herdr/handoff/$PROJECT"
+state="$dir/watch"
+mkdir -p "$state"
+unit="herdr-watch-$(printf '%s' "$PROJECT" | tr -c 'A-Za-z0-9_.-' '_')"
+
+env_watch="${HERDR_WATCH:-}" # 환경 변수가 있으면 harness.env보다 앞선다(시험·일시 끄기)
+load_env() {
+  HERDR_WATCH=1 HERDR_WATCH_INTERVAL=60 HERDR_WATCH_MAX_RESTARTS=3 HERDR_WATCH_RENOTIFY=1800 HERDR_CLEAR_TIMEOUT=1800
+  HERDR_WATCH_IDLE_EXIT=21600
+  # shellcheck disable=SC1091
+  [[ -f "$BIN/../harness.env" ]] && . "$BIN/../harness.env" >/dev/null 2>&1
+  [[ -n "$env_watch" ]] && HERDR_WATCH="$env_watch"
+  return 0
+}
+log() { printf '%s %s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" "$*" >>"$dir/watch.log"; }
+has_systemd() { command -v systemd-run >/dev/null && [[ -S "${XDG_RUNTIME_DIR:-/nonexistent}/bus" ]] && systemctl --user show-environment >/dev/null 2>&1; }
+
+enrich() { # hc ls 결과(stdin) → 터미널마다 hc get으로 읽은 배열(오래된 순). hc ls는 시각·라벨을 주지 않는다
+  local a
+  for a in $(jq -r '.terminals[]?.address' 2>/dev/null); do hc get "$a" --json 2>/dev/null; done |
+    jq -s -c 'map(select(type == "object") | {address, state, status, reason, signal, exit_code, created_ms, finished_ms, labels, argv})
+              | sort_by(.created_ms // 0)' 2>/dev/null || echo '[]'
+}
+terminals() { # 역할 [all]. 그 역할의 터미널(JSON 배열, 오래된 순). all이면 끝난 것도
+  hc ls --json ${2:+--all} --label "project=$PROJECT" --label "role=$1" 2>/dev/null | enrich
+}
+live_count() { hc ls --json --label "project=$PROJECT" --label "role=$1" 2>/dev/null | jq '[.terminals[]? | select(.state != "finished")] | length' 2>/dev/null || echo 0; }
+abnormal() { # 터미널 JSON → 최근 한 시간 안에 비정상으로 끝났으면 이유. 오래된 종료는 이미 사람이 본 것으로 친다
+  jq -r --argjson now "$(date +%s)" 'if ((.finished_ms // 0) / 1000) < ($now - 3600) then empty
+         elif .reason == "holder_lost" then "holder_lost"
+         elif .reason == "killed" then empty
+         elif (.signal | tostring | test("^(9|KILL|SIGKILL)$")) then "SIGKILL(OOM 등)"
+         else empty end' <<<"$1"
+}
+
+check_orchestrator() {
+  local last addr why recent
+  [[ "$(live_count orchestrator)" -eq 0 ]] || return 0
+  # 끝난 것만 본다. 방금 Commander가 새로 띄운 살아 있는 세션을 처리 끝으로 표시하지 않는다
+  last="$(terminals orchestrator all | jq -c '[.[] | select(.state == "finished")] | last // empty')"
+  [[ -n "$last" ]] || return 0
+  addr="$(jq -r .address <<<"$last")"
+  [[ -e "$state/handled.$addr" ]] && return 0
+  # hc kill은 HUP 뒤 SIGKILL로 올리므로 reason "killed"는 signal 9여도 사용자·Commander의 뜻이다
+  why="$(abnormal "$last")"
+  [[ -n "$why" ]] || { : >"$state/handled.$addr"; return 0; }
+  recent="$(awk -v now="$(date +%s)" '$1 + 0 > now - 3600 { n++ } END { print n + 0 }' "$state/restarts" 2>/dev/null)"
+  if [[ "${recent:-0}" -ge "$HERDR_WATCH_MAX_RESTARTS" ]]; then
+    : >"$state/handled.$addr"
+    log "Orchestrator($addr) $why — 한 시간 재기동 상한(${HERDR_WATCH_MAX_RESTARTS})이라 띄우지 않음"
+    "$BIN/herdr-notify" "Orchestrator 자동 재기동 중단" "Orchestrator($addr)가 $why로 끝났다. 한 시간에 ${recent}번 다시 띄워 더 띄우지 않는다. 메모리·부하를 확인하고 Commander에서 다시 띄운다." >/dev/null
+    return 0
+  fi
+  local lost task new
+  lost="$(hc ls --all --json --label "project=$PROJECT" 2>/dev/null | jq -c '{terminals: [.terminals[]? | select(.state == "finished")]}' | enrich |
+    jq -r --argjson f "$(jq '.finished_ms // 0' <<<"$last")" '[.[] | select((.reason == "holder_lost" or (.signal | tostring | test("^(9|KILL|SIGKILL)$"))) and ((.finished_ms // 0) - $f | fabs) < 60000) | "\(.labels.role // "?")(\(.address))"] | join(", ")' 2>/dev/null)"
+  task="재개 — 이전 Orchestrator($addr)가 $why로 끝나 감시자(herdr-watch)가 다시 띄웠다. 같은 때 끝난 세션: ${lost:-없음}. 상태판·세션 장부·작업 계획을 읽고 이어 간다. 끝난 워커의 worktree에 커밋 안 된 변경이 있으면 이어받게 배정하고, 보내지 못한 사용자 결정이 있었는지 pending-decisions.md를 확인한다."
+  # 도구 설정이 비어 있으면 이전 Orchestrator의 도구로 띄운다. 감시자가 띄우는 세션은 감시자를 다시 띄우지 않는다
+  local args=(--no-commander --task "$task" orchestrator) prev_tool
+  if [[ -z "${HERDR_ORCHESTRATOR_TOOL:-}" ]]; then
+    prev_tool="$(jq -r '[.argv[]? | select(startswith("HERDR_TOOL=")) | sub("^HERDR_TOOL="; "")] | first // empty' <<<"$last" 2>/dev/null)"
+    [[ "$prev_tool" == codex || "$prev_tool" == claude ]] && args+=("$prev_tool")
+  fi
+  # 시도는 성공·실패 모두 시간당 상한에 센다. 실패하면 처리 끝으로 표시하지 않아 다음 간격에 다시 시도한다
+  date +%s >>"$state/restarts"
+  if new="$(cd "$ROOT" && HERDR_WATCH=0 "$BIN/herdr-session" "${args[@]}" 2>&1)"; then
+    : >"$state/handled.$addr"
+    # 이전 Orchestrator의 [CLEAR 요청]은 새 세션에 해당하지 않는다(재기동 메시지를 지우지 않게)
+    rm -f "$dir/.orchestrator.clear-request"
+    log "Orchestrator($addr) $why — 다시 띄움: $new"
+    "$BIN/herdr-notify" "Orchestrator 자동 재기동" "$why로 끝난 Orchestrator($addr)를 다시 띄웠다(${new##*$'\n'}). 같이 끝난 세션: ${lost:-없음}" >/dev/null
+  else
+    log "Orchestrator($addr) $why — 다시 띄우지 못함: $new"
+    "$BIN/herdr-notify" "Orchestrator 재기동 실패" "$why로 끝난 Orchestrator($addr)를 다시 띄우지 못했다: ${new:0:200}" >/dev/null
+  fi
+}
+
+check_commander() {
+  local now last n mark addr
+  now=$(date +%s)
+  if [[ "$(live_count commander)" -gt 0 ]]; then return 0; fi
+  last="$(terminals commander all | jq -c 'last // empty')"
+  if [[ -n "$last" ]]; then
+    addr="$(jq -r .address <<<"$last")"
+    if [[ -n "$(abnormal "$last")" && ! -e "$state/handled.$addr" ]]; then
+      : >"$state/handled.$addr"
+      log "Commander($addr) $(abnormal "$last")로 끝남 — 사용자에게 알림"
+      "$BIN/herdr-notify" "Commander가 끝났다" "Commander($addr)가 $(abnormal "$last")로 끝났다. herdr 패널에서 .agents/bin/herdr-session --here commander 로 다시 띄운다." >/dev/null
+    fi
+  fi
+  [[ -s "$dir/pending-decisions.md" ]] || return 0
+  n="$(grep -c '^- ' "$dir/pending-decisions.md" 2>/dev/null)"
+  mark="$(cat "$state/notified" 2>/dev/null || echo 0)"
+  if [[ $(stat -c %Y "$dir/pending-decisions.md" 2>/dev/null || stat -f %m "$dir/pending-decisions.md") -gt "$mark" || $((now - mark)) -ge "$HERDR_WATCH_RENOTIFY" ]]; then
+    echo "$now" >"$state/notified"
+    log "Commander 없음, 전하지 못한 보고 ${n}건 — 사용자에게 알림"
+    "$BIN/herdr-notify" "결정 요청 ${n}건 대기(Commander 없음)" "$(tail -n 1 "$dir/pending-decisions.md") — herdr 패널에서 .agents/bin/herdr-session --here commander 로 Commander를 띄우면 전달된다. 파일: $dir/pending-decisions.md" >/dev/null
+  fi
+}
+
+check_clear() {
+  local req="$dir/.orchestrator.clear-request" since now out
+  [[ -f "$req" ]] || return 0
+  since="$(head -n 1 "$req" 2>/dev/null)"; since="${since:-0}"; now=$(date +%s)
+  if [[ "$(live_count commander)" -gt 0 && $((now - since)) -lt "$HERDR_CLEAR_TIMEOUT" ]]; then return 0; fi
+  [[ "$(live_count orchestrator)" -gt 0 ]] || { rm -f "$req"; return 0; }
+  # 요청보다 나중에 뜬 Orchestrator(재기동·교체)에는 해당하지 않는다
+  local born
+  born="$(terminals orchestrator | jq -r '[.[] | select(.state != "finished")] | last | (.created_ms // 0) / 1000 | floor' 2>/dev/null)"
+  if [[ "${born:-0}" -gt "$since" ]]; then rm -f "$req"; log "[CLEAR 요청]이 지금 Orchestrator보다 오래돼 지움"; return 0; fi
+  if out="$("$BIN/herdr-clear" --if-idle orchestrator 2>&1)"; then
+    log "[CLEAR 요청]($(( (now - since) / 60 ))분 전)을 대신 처리: $out"
+  else
+    [[ -n "$out" ]] && echo "$out" >"$state/clear.last"
+  fi
+}
+
+busy() { # 할 일이 남았거나 세션이 살아 있으면 0
+  [[ -s "$dir/pending-decisions.md" || -f "$dir/.orchestrator.clear-request" ]] && return 0
+  [[ "$(hc ls --json --label "project=$PROJECT" 2>/dev/null | jq '.terminals | length' 2>/dev/null || echo 1)" -gt 0 ]]
+}
+
+once() {
+  load_env
+  [[ "$HERDR_WATCH" == 1 ]] || return 0
+  command -v hc >/dev/null || { log "hc가 없다"; return 0; }
+  check_orchestrator
+  check_commander
+  check_clear
+}
+
+case "${1:-}" in
+  --once) once ;;
+  --loop)
+    exec 9>"$state/lock"
+    command -v flock >/dev/null && { flock -n 9 || { echo "감시자가 이미 돈다" >&2; exit 0; }; }
+    log "감시 시작(pid $$)"
+    idle_since=$(date +%s)
+    while :; do
+      once
+      if busy; then idle_since=$(date +%s)
+      elif [[ $(($(date +%s) - idle_since)) -ge "$HERDR_WATCH_IDLE_EXIT" ]]; then log "세션도 할 일도 없어 감시를 끝낸다"; exit 0
+      fi
+      sleep "$HERDR_WATCH_INTERVAL"
+    done ;;
+  --ensure)
+    load_env
+    [[ "$HERDR_WATCH" == 1 ]] || exit 0
+    if has_systemd; then
+      systemctl --user is-active --quiet "$unit" && { echo "감시자: 이미 돈다($unit)"; exit 0; }
+      systemctl --user reset-failed "$unit" >/dev/null 2>&1
+      envs=(--setenv=PATH="$PATH" --setenv=HOME="$HOME" --setenv=HERDR_PROJECT="$PROJECT")
+      for v in DBUS_SESSION_BUS_ADDRESS DISPLAY WAYLAND_DISPLAY HERDR_SOCKET_PATH XDG_RUNTIME_DIR; do
+        [[ -n "${!v:-}" ]] && envs+=(--setenv="$v=${!v}")
+      done
+      systemd-run --user --quiet --collect --unit "$unit" -p Restart=on-failure -p RestartSec=30 \
+        --working-directory="$ROOT" "${envs[@]}" -- "$SELF" --loop && { echo "감시자: 띄움($unit)"; exit 0; }
+      echo "감시자: systemd로 띄우지 못해 setsid로 띄운다" >&2
+    fi
+    if [[ -f "$state/pid" ]] && kill -0 "$(cat "$state/pid")" 2>/dev/null; then echo "감시자: 이미 돈다(pid $(cat "$state/pid"))"; exit 0; fi
+    detach=(nohup); command -v setsid >/dev/null && detach=(setsid nohup)
+    (cd "$ROOT" && HERDR_PROJECT="$PROJECT" "${detach[@]}" "$SELF" --loop >>"$dir/watch.log" 2>&1 </dev/null & echo $! >"$state/pid")
+    echo "감시자: 띄움(setsid, hc holder와 같이 끝날 수 있다)" ;;
+  --stop)
+    has_systemd && systemctl --user stop "$unit" >/dev/null 2>&1
+    [[ -f "$state/pid" ]] && kill "$(cat "$state/pid")" 2>/dev/null
+    rm -f "$state/pid"
+    echo "감시자: 껐다" ;;
+  --status)
+    if has_systemd && systemctl --user is-active --quiet "$unit"; then echo "감시자: 돈다($unit)"
+    elif [[ -f "$state/pid" ]] && kill -0 "$(cat "$state/pid")" 2>/dev/null; then echo "감시자: 돈다(pid $(cat "$state/pid"))"
+    else echo "감시자: 없음"; fi
+    tail -n 5 "$dir/watch.log" 2>/dev/null ;;
+  *) sed -n '2,6p' "${BASH_SOURCE[0]}" | sed 's/^# *//' >&2; exit 2 ;;
+esac

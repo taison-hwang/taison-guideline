@@ -10,7 +10,8 @@
 
 자리: HERDR_HEAVY_SLOTS(기본 1)개가 동시에 돈다. 순서는 급함, 들어온 순이다.
 시작 가드: 자리를 얻은 뒤 가용 메모리가 HERDR_HEAVY_MIN_MEM_GB 이상, 1분 부하가 HERDR_HEAVY_MAX_LOAD 미만이 될 때까지
-기다린다(0이면 보지 않는다). 기다리는 동안 자리를 쥐고 있으므로 뒤 검사도 함께 기다린다.
+기다린다(0이면 보지 않는다. HERDR_HEAVY_MAX_LOAD=auto는 코어 수×0.75). 기다리는 동안 자리를 쥐고 있으므로 뒤 검사도 함께 기다린다.
+메모리 상한: 명령은 자기 systemd scope에서 HERDR_HEAVY_MEM_MAX(기본 50%) 상한으로 돈다(herdr-scope). 넘으면 이 검사만 끝난다.
 시간 제한은 명령의 실행 시간에만 건다. 대기열과 가드에서 기다린 시간은 세지 않고, 기다리는 동안 순번을 알린다.
 명령은 새 프로세스 묶음으로 돌리고, 시간 초과나 중단 때 묶음째 끝낸다(고아 검사가 남지 않는다).
 기록 위치: HERDR_HEAVY_DIR(기본 ~/.claude/herdr/heavy). 프로세스가 죽은 표는 다음 사람이 치운다.
@@ -109,8 +110,15 @@ def who(t):
     return f"{t['project']}/{t['role']}"
 
 
+def max_load_limit():
+    raw = (os.environ.get("HERDR_HEAVY_MAX_LOAD") or "0").strip()
+    if raw == "auto":
+        return (os.cpu_count() or 4) * 0.75
+    return env_num("HERDR_HEAVY_MAX_LOAD", 0)
+
+
 def guard_reason():
-    min_gb, max_load = env_num("HERDR_HEAVY_MIN_MEM_GB", 0), env_num("HERDR_HEAVY_MAX_LOAD", 0)
+    min_gb, max_load = env_num("HERDR_HEAVY_MIN_MEM_GB", 0), max_load_limit()
     if min_gb > 0:
         try:
             with open("/proc/meminfo") as f:
@@ -198,7 +206,12 @@ def cmd_run(a):
         if waited >= 1:
             say(f"자리를 얻었다(기다린 시간 {ago(entered)})")
         out = open(a.log, "a") if a.log else None
-        child = subprocess.Popen(a.command, start_new_session=True, stdout=out, stderr=subprocess.STDOUT if out else None)
+        scope = os.path.join(os.path.dirname(os.path.abspath(__file__)), "herdr-scope")
+        command = a.command
+        if os.access(scope, os.X_OK):
+            # 자기 cgroup에서 메모리 상한을 두고 돈다. herdr-scope는 exec로 바뀌므로 PID·프로세스 묶음이 그대로다
+            command = [scope, f"{project}-{a.role}-heavy", os.environ.get("HERDR_HEAVY_MEM_MAX", "50%"), "--"] + a.command
+        child = subprocess.Popen(command, start_new_session=True, stdout=out, stderr=subprocess.STDOUT if out else None)
         try:
             return child.wait(timeout=a.timeout if a.timeout and a.timeout > 0 else None)
         except subprocess.TimeoutExpired:

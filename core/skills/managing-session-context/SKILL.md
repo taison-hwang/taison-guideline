@@ -37,7 +37,10 @@ description: herdr 세션의 컨텍스트 관리 규칙(Codex·Claude 공통). �
 - 사용량 때문에 작업을 끊지 않는다. 차면 compact가 처리한다.
 - `[compact 복구]` 알림을 받으면 주입된 작업 상태와 스냅샷으로 위치를 확인하고, 수용 기준을 다시 읽은 뒤 이어 간다. 기억나지 않는 결정을 추측하지 말고 파일과 커밋에서 확인한다.
 - 워커가 `[컨텍스트 소프트 신호]` 알림을 받으면 지금 작업을 수용 기준까지 계속한다. 차면 compact가 처리하므로 서두르거나 미완성 작업을 `[완료]`로 보고하지 않는다. 신호만으로 `/clear`를 요청하지 않는다. 다음 배정은 Orchestrator가 정한다.
-- Orchestrator가 신호를 받으면 처리 중인 보고까지 마치고, 새 배정은 정리 뒤로 미뤄 상태판에 대기로 적고, 세션 장부를 고친 뒤 Commander에 `[CLEAR 요청]`을 보낸다. 상태가 모두 디스크에 있으므로 언제든 이어 갈 수 있다. Commander가 신호를 받으면 사용자에게 정리를 요청한다.
+- Orchestrator가 신호를 받으면 처리 중인 보고까지 마치고, 상태판과 세션 장부를 고친 뒤 `herdr-report "[CLEAR 요청] <이유>"`를 보낸다. 상태가 모두 디스크에 있으므로 언제든 이어 갈 수 있다.
+  - 정리를 기다리는 동안에도 이미 계획한 같은 묶음의 배정, `[병합]` 지시, 보고 처리는 계속한다. 새 묶음의 계획과 연관 없는 큰 판단만 정리 뒤로 미룬다. 정리 대기 때문에 워커를 놀리지 않는다.
+  - Commander가 없거나 `HERDR_CLEAR_TIMEOUT`(기본 30분) 동안 정리하지 않으면, 감시자(`herdr-watch`)가 Orchestrator가 쉴 때 대신 정리하고 `재개`를 보낸다(ohmystock 2026-11-11: Commander가 없어 정리 요청이 하루 동안 처리되지 않았고 그동안 새 배정이 멈췄다).
+- Commander가 신호를 받으면 사용자에게 정리를 요청한다.
 - Codex 세션은 맥락 크기를 기록하는 hook이 없다. 상태줄 `Context N% used`로 스스로 판단하고, Orchestrator는 `hc read <t> | grep -o 'Context [0-9]*% used'`로 확인한다. 이때만 비율을 창 크기에 곱해 토큰으로 환산한다.
 
 ## 작업 경계: 정리할지 정하기
@@ -57,24 +60,26 @@ description: herdr 세션의 컨텍스트 관리 규칙(Codex·Claude 공통). �
 
 ## 정리 실행
 
-대상 세션이 쉬고 있는지 확인한 뒤 실행한다. `hc send`는 `<hc from>`으로 감싸 붙이므로 `/clear`는 반드시 `hc keys`로 한 글자씩 친다.
+`herdr-clear`로 실행한다. 대상이 쉬기를 기다려 `/clear`를 치고, 거부되지 않았는지 확인한 뒤 다음 메시지를 보낸다. `hc send`는 `<hc from>`으로 감싸 붙이므로 `/clear`를 그것으로 보내면 명령으로 듣지 않는다.
 
 ```bash
-hc wait <t>     # 작업 중이면 끝날 때까지, 쉬고 있으면 바로 끝난다
-hc keys <t> / c l e a r enter
-hc wait <t>
-hc send <t> "[배정] <내용>"     # 이어 갈 작업이 있을 때는 재개
+herdr-clear orchestrator                          # /clear 뒤 "재개"
+herdr-clear --send "[배정] <내용>" worker-1        # /clear 뒤 다음 배정
 ```
+
+직접 쳐야 하면 `hc wait <t>`, `hc keys <t> / c l e a r enter`, `hc wait <t>`, `hc send <t> "<다음 메시지>"` 순서다.
+
+- Claude 세션에 `hc keys <t> esc esc`를 보내지 않는다. 되감기(Rewind) 창이 열려 잘못 고르면 대화가 되돌아간다. 입력창을 비우는 데에도 쓰지 않는다.
 
 | 대상 | 실행하는 쪽 |
 | --- | --- |
 | 워커 | Orchestrator |
-| Orchestrator | Commander(Orchestrator가 상태판·장부를 고친 뒤 `[CLEAR 요청]`을 보낸다) |
+| Orchestrator | Commander(Orchestrator가 상태판·장부를 고친 뒤 `[CLEAR 요청]`을 보낸다). Commander가 없거나 처리하지 않으면 감시자 |
 | Commander | 사용자에게 요청한다 |
 
 - 대상이 쉬고 있고 맡은 작업이 끝났을 때만 실행한다. 작업 중이면 도구가 `/clear`를 거부하고 맥락이 그대로 남는다.
 - 맡은 작업이 끝난 때는 종류마다 다르다. 병합하는 작업은 `[병합완료]`를 받은 뒤, 병합하지 않는 작업은 `[완료]`를 받아들인 뒤다. 첫 `[완료]`만으로는 정리하지 않는다. 예외 정리는 아래 절차를 따른다.
-- 실행 뒤 거부되지 않았는지 확인한다: `hc read <t> | grep -a 'is disabled'`. 나오면 끝나기를 기다렸다가 다시 실행한다.
+- 거부되면(`is disabled`) `herdr-clear`가 끝 코드 3으로 알린다. 끝나기를 기다렸다가 다시 실행한다.
 - `/clear`는 터미널 라벨을 지우지 않으므로 역할은 유지된다. 정리 뒤 세션 장부의 맥락 칸을 비운다.
 
 ## 예외 정리: 작업 중 복구가 안 될 때
