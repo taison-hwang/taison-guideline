@@ -923,6 +923,8 @@ check "막음: worktree 최상위 경로만(자기 세션 명령줄에도 맞는
 check "통과: PID로 죽이는 kill" "passes '$GM' 'kill 12345' && passes '$GM' 'sleep 100 & kill -9 \$!' && passes '$GM' 'kill -TERM \$pid; wait \$pid'"
 check "통과: 자기 worktree 경로로 좁힌 pkill·pgrep" "passes '$WORK/gk-wt' 'pkill -f \"$WORK/gk-wt/node_modules/.bin/vite\"' && passes '$WORK/gk-wt' 'pkill -f \"\$PWD/app/build\"' && passes '$WORK/gk-wt' 'kill \$(pgrep -f \"$WORK/gk-wt/server\")'"
 check "통과: pkill -P <PID>(그 PID의 자식만)와 명령 안의 글자" "passes '$GM' 'pkill -P 4242' && passes '$GM' 'git commit -m \"pkill -f x 금지\"' && passes '$GM' 'grep -n pkill README.md' && passes '$GM' 'echo killall'"
+check "통과: 따옴표·heredoc 안의 글자(커밋 메시지, 검색어)" "passes '$GM' 'git commit -m \"stop; pkill -f vite\"' && passes '$GM' 'grep -rn \"kill \$(pgrep\" docs/' && passes '$GM' \"\$(printf 'git commit -F - <<EOF\\npkill -f x\\nEOF')\""
+check "막음: 래퍼·sh -c·kill -1·for 루프 우회" "blocked '$GM' 'timeout 5 pkill -f vite' && blocked '$GM' \"bash -c 'pkill -f vite'\" && blocked '$GM' 'kill -9 -1' && blocked '$GM' 'for p in \$(pgrep vite); do kill \$p; done'"
 check "역할이 없는 세션에는 적용하지 않음" "jq -n '{tool_name:\"Bash\",cwd:\"$GM\",tool_input:{command:\"pkill -f x\"}}' | env -u HERDR_ROLE '$GK'"
 check "입력이 깨졌거나 Bash가 아니면 조용히 넘어감" "echo 'not json' | HERDR_ROLE=worker-1 '$GK' && echo '{}' | HERDR_ROLE=worker-1 '$GK'"
 check "hook 설정: Claude Bash 사전 hook" "jq -e '.hooks.PreToolUse[] | select(.matcher == \"Bash\") | .hooks[] | select(.command | endswith(\"guard-kill.py\"))' '$P/.claude/settings.json' >/dev/null"

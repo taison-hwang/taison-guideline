@@ -268,10 +268,13 @@ def cmd_cancel(a):
         pid = int(t["pid"])
         try:
             with open(f"/proc/{pid}/cmdline", "rb") as f:
-                if b"herdr-queue" not in f.read():
-                    continue  # PID가 다른 프로세스로 재사용됐다
+                argv = f.read().split(b"\0")
+            ours = any(x.endswith(b"herdr-queue") for x in argv) and b"run" in argv and \
+                b"--role" in argv and argv[argv.index(b"--role") + 1:][:1] == [t["role"].encode()]
+            if not ours:
+                continue  # PID가 다른 프로세스로 재사용됐다
         except OSError:
-            pass
+            continue  # 확인할 수 없으면 죽이지 않는다
         try:
             os.kill(pid, signal.SIGTERM)
             hit += 1

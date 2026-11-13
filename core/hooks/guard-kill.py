@@ -16,7 +16,7 @@ import subprocess
 import sys
 
 BROAD_USER_OPTS = {"-u", "-U", "--euid", "--uid"}
-PIDLIKE = re.compile(r"^(\d+|\$!|\$\{?\w+\}?|\"\$\{?\w+\}?\")$")
+WRAPPERS = ("sudo", "env", "nohup", "time", "exec", "command", "nice", "setsid", "stdbuf", "busybox")
 
 
 def linked_worktree_root(cwd):
@@ -44,6 +44,12 @@ def narrowed(text, cwd, root):
     return (root + "/") in text
 
 
+def mask(command):
+    """heredoc 본문과 따옴표 안의 글자를 공백으로 가린다(커밋 메시지·검색어 안의 pkill을 명령으로 보지 않는다)."""
+    command = re.sub(r"<<-?\s*['\"]?(\w+)['\"]?[^\n]*\n.*?\n\s*\1\b", lambda m: m.group(0).split("\n", 1)[0], command, flags=re.S)
+    return re.sub(r"'[^']*'|\"(?:\\.|[^\"\\])*\"", lambda m: m.group(0)[0] + " " * (len(m.group(0)) - 2) + m.group(0)[-1], command)
+
+
 def simple_commands(command):
     parts = re.split(r"\n|&&|\|\||[;|&]|\$\(|`|\(|\)", command)
     for part in parts:
@@ -51,8 +57,9 @@ def simple_commands(command):
             words = shlex.split(part)
         except ValueError:
             words = part.split()
-        while words and (re.match(r"^\w+=", words[0]) or words[0] in ("sudo", "env", "nohup", "time", "exec", "command")):
-            words = words[1:]
+        while words and (re.match(r"^\w+=", words[0]) or os.path.basename(words[0]) in WRAPPERS or os.path.basename(words[0]) == "timeout"):
+            skip = 2 if os.path.basename(words[0]) == "timeout" and len(words) > 1 else 1
+            words = words[skip:]
         if words:
             yield words
 
@@ -87,23 +94,35 @@ def pkill_verdict(words, text, cwd, root):
     return "패턴이 다른 세션의 프로세스나 세션 자체의 명령줄(첫 임무 원문 포함)에도 맞을 수 있다"
 
 
-def verdict(command, cwd):
+def verdict(command, cwd, depth=0):
     root = linked_worktree_root(cwd)
+    plain = mask(command)
     for words in simple_commands(command):
         name = os.path.basename(words[0])
-        if name in ("pkill", "killall"):
-            why = pkill_verdict(words, " ".join(words), cwd, root)
+        if name in ("sh", "bash", "zsh") and "-c" in words and depth < 3 and words.index("-c") + 1 < len(words):
+            why = verdict(words[words.index("-c") + 1], cwd, depth + 1)
+            if why:
+                return why
+    for words in simple_commands(plain):
+        name = os.path.basename(words[0])
+        if name in ("pkill", "killall", "killall5"):
+            # 가린 글자 때문에 패턴이 비므로 원문에서 같은 명령을 찾아 판정한다
+            orig = next((w for w in simple_commands(command) if os.path.basename(w[0]) == name), words)
+            why = pkill_verdict(orig, " ".join(orig), cwd, root) if name != "killall5" else "killall5는 모든 프로세스를 죽인다"
             if why:
                 return f"{name}: {why}"
+        if name == "kill" and re.search(r"(^|\s)-?-?\s*-1(\s|$)", " ".join(words[1:])):
+            return "kill -1(PID -1)은 이 사용자의 모든 프로세스를 죽인다"
     # pgrep·pidof·ps로 고른 PID를 kill에 넘기는 명령
     lookup = r"\b(pgrep|pidof|ps)\b"
     fed = [
-        re.search(r"\bkill\b[^\n;&|]*(\$\(|`)\s*[^)`]*" + lookup, command),
-        re.search(lookup + r"[^\n]*\|[^\n]*\bxargs\b[^\n]*\bkill\b", command),
-        re.search(lookup + r"[^\n]*\|[^\n]*\bwhile\b[^\n]*\bkill\b", command),
+        re.search(r"\bkill\b[^\n;&|]*(\$\(|`)\s*[^)`]*" + lookup, plain),
+        re.search(lookup + r"[^\n]*\|[^\n]*\bxargs\b[^\n]*\bkill\b", plain),
+        re.search(lookup + r"[^\n]*\|[^\n]*\bwhile\b[^\n]*\bkill\b", plain),
+        re.search(r"\bfor\b[^\n;]*\$\([^)]*" + lookup + r"[^)]*\)[^\n]*\bkill\b", plain),
     ]
     for m in fed:
-        if m and not narrowed(command[m.start():], cwd, root):
+        if m and not narrowed(command[m.start():m.end() + 200], cwd, root):
             return "pgrep·pidof·ps로 고른 프로세스를 kill에 넘기는 명령은 패턴에 맞는 모든 프로세스를 죽인다"
     return None
 

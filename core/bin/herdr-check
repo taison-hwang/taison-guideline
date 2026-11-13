@@ -33,7 +33,7 @@ log="${HERDR_CHECK_LOG:-$dir/.$role.check.log}" # 뒤에서 도는 검사는 SHA
 
 run_limited() { # 명령 문자열 [제한초]. 시간 제한 안에서 돌린다
   local limit="${2:-$HERDR_CHECK_TIMEOUT}"
-  if command -v timeout >/dev/null; then timeout "$limit" bash -c "$1"; else bash -c "$1"; fi
+  if command -v timeout >/dev/null; then timeout "$limit" bash -c "$1" 8>&-; else bash -c "$1" 8>&-; fi
 }
 
 # 기록 파일은 한 줄에 "결과 키 시각 [이어받은 키]"이고 뒤에 붙인다. 뒤에서 도는 검사와 앞의 검사가 함께 써도 된다.
@@ -237,7 +237,7 @@ if [[ $rc -eq 0 && -n "$HERDR_CHECK_HEAVY_CMD" ]]; then
   echo "무거운 검사: $HERDR_CHECK_HEAVY_CMD (공용 대기열, 순서는 herdr-queue로 본다)" >&2
   wait_file="$(mktemp)"
   "$(dirname "${BASH_SOURCE[0]}")/herdr-queue" run --project "$project" --role "$role" --sha "$key" \
-    --timeout "$left" --log "$log" --wait-file "$wait_file" -- bash -c "$HERDR_CHECK_HEAVY_CMD"; rc=$?
+    --timeout "$left" --log "$log" --wait-file "$wait_file" -- bash -c "$HERDR_CHECK_HEAVY_CMD" 8>&-; rc=$?
   queued="$(cat "$wait_file" 2>/dev/null)"; queued="${queued:-0}"
   rm -f "$wait_file"
 fi
