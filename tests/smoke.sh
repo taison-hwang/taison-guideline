@@ -450,6 +450,23 @@ echo h3 >h3.txt; fcommit heavy3
 check "무거운 단계만 있어도 검사, 대기열 대기는 시간 제한·실행 시간에 넣지 않음" "[ \"\$('$C' --status)\" = NONE ] && '$C' >/dev/null 2>&1 && tail -n 1 '$D/checks.tsv' | awk -F'\t' '\$6 == \"PASS\" && \$8 >= 2 && \$7 < 2' | grep -q ."
 wait
 set_env 's/^HERDR_CHECK_HEAVY_CMD=.*/HERDR_CHECK_HEAVY_CMD=/; s/^HERDR_CHECK_TIMEOUT=.*/HERDR_CHECK_TIMEOUT=3600/' "$P/.agents/harness.env"
+# 같은 역할·같은 SHA의 전체 검사가 이미 돌면 새로 넣지 않고 그 결과를 함께 씀
+export HERDR_ROLE=worker-14; cd "$F"; rm -f count.log "$D/.worker-14.check"
+set_env 's/^HERDR_CHECK_CMD=.*/HERDR_CHECK_CMD=/; s/^HERDR_CHECK_HEAVY_CMD=.*/HERDR_CHECK_HEAVY_CMD="echo run >>count.log; sleep 1.5"/' "$P/.agents/harness.env"
+echo d1 >d1.txt; fcommit dup1
+"$C" >"$WORK/dup1.out" 2>&1 & dpid1=$!; sleep 0.5
+"$C" >"$WORK/dup2.out" 2>&1; drc2=$?; wait $dpid1; drc1=$?
+check "같은 SHA 검사가 돌고 있으면 두 번째는 새로 돌지 않고 그 결과(PASS)를 씀" "[ $drc1 -eq 0 ] && [ $drc2 -eq 0 ] && [ \"\$(wc -l <count.log)\" -eq 1 ] && grep -q '같은 SHA.*이미 돌고 있다' '$WORK/dup2.out' && grep -q '앞서 돈 같은 SHA의 검사 결과를 씀' '$WORK/dup2.out' && [ \"\$(grep -c worker-14 '$D/checks.tsv')\" -eq 1 ]"
+rm -f count.log "$D/.worker-14.check"
+set_env 's/^HERDR_CHECK_HEAVY_CMD=.*/HERDR_CHECK_HEAVY_CMD="echo run >>count.log; sleep 1.5; false"/' "$P/.agents/harness.env"
+echo d2 >d2.txt; fcommit dup2
+"$C" >"$WORK/dup1.out" 2>&1 & dpid1=$!; sleep 0.5
+"$C" >"$WORK/dup2.out" 2>&1; drc2=$?; wait $dpid1; drc1=$?
+check "앞 검사가 FAIL이면 기다린 검사도 그 FAIL을 쓰고 다시 돌지 않음" "[ $drc1 -eq 1 ] && [ $drc2 -eq 1 ] && [ \"\$(wc -l <count.log)\" -eq 1 ]"
+set_env 's/^HERDR_CHECK_HEAVY_CMD=.*/HERDR_CHECK_HEAVY_CMD=true/' "$P/.agents/harness.env"
+echo d3 >d3.txt; fcommit dup3; "$C" >/dev/null 2>&1; rm -f count.log
+check "이미 PASS 기록이 있는 SHA는 다시 돌지 않음" "'$C' 2>&1 | grep -q '이미 통과했다' && [ ! -e count.log ]"
+set_env 's/^HERDR_CHECK_HEAVY_CMD=.*/HERDR_CHECK_HEAVY_CMD=/' "$P/.agents/harness.env"
 
 echo "== 뒤에서 도는 검사와 쌓기"
 export HERDR_ROLE=worker-9 HC_TERMINAL_ID=t77 XDG_CACHE_HOME="$WORK/cache"; oldpath="$PATH"; export PATH="$WORK/stub2:$PATH"
