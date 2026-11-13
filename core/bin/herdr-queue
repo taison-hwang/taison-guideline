@@ -4,6 +4,7 @@
   herdr-queue                                  대기열을 보여 준다
   herdr-queue urgent <역할> [--project P]      그 역할의 검사를 대기열 맨 앞으로. 대기 중인 검사가 없으면 다음 검사 한 번에 건다
   herdr-queue normal <역할> [--project P]      급함 표시를 푼다
+  herdr-queue cancel [--sha S]                 이 세션($HERDR_PROJECT/$HERDR_ROLE)이 넣은 대기·실행 중인 검사만 멈춘다(pkill 대신)
   herdr-queue ahead                            지금 실행·대기 중인 검사 수
   herdr-queue run --role R --sha S [--timeout 초] [--log 파일] [--wait-file 파일] -- <명령…>
                                                자리를 얻으면 명령을 돌리고 끝나면 자리를 내놓는다(herdr-check가 쓴다)
@@ -251,6 +252,36 @@ def cmd_mark(a, prio):
         print(f"보통: {target} 급함 표시를 풀었다")
 
 
+def cmd_cancel(a):
+    """부른 세션의 프로젝트·역할 표만 멈춘다. 대상은 환경에서만 정하므로 다른 역할·프로젝트는 고를 수 없다."""
+    project, role = os.environ.get("HERDR_PROJECT"), os.environ.get("HERDR_ROLE")
+    if not project or not role:
+        sys.exit("HERDR_PROJECT·HERDR_ROLE이 없는 세션은 취소할 대상을 정할 수 없다")
+    if not os.path.isdir(TICKETS):
+        print("취소할 검사가 없다")
+        return
+    with Mutex():
+        mine = [t for t in load() if t["project"] == project and t["role"] == role
+                and (not a.sha or t["sha"].startswith(a.sha))]
+    hit = 0
+    for t in mine:
+        pid = int(t["pid"])
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                if b"herdr-queue" not in f.read():
+                    continue  # PID가 다른 프로세스로 재사용됐다
+        except OSError:
+            pass
+        try:
+            os.kill(pid, signal.SIGTERM)
+            hit += 1
+            print(f"취소: {who(t)} {t['sha'][:12]} ({'실행' if t['state'] == 'run' else '대기'}, pid {pid})")
+        except OSError:
+            pass
+    if not hit:
+        print(f"취소할 검사가 없다: {project}/{role}")
+
+
 def cmd_list():
     if not os.path.isdir(TICKETS):
         print("대기열이 비었다")
@@ -291,6 +322,8 @@ def main():
         p = sub.add_parser(name)
         p.add_argument("role")
         p.add_argument("--project")
+    c = sub.add_parser("cancel")
+    c.add_argument("--sha", default="")
     sub.add_parser("ahead")
     sub.add_parser("list")
     a = ap.parse_args(argv)
@@ -299,6 +332,8 @@ def main():
         sys.exit(cmd_run(a))
     if a.cmd in ("urgent", "normal"):
         cmd_mark(a, 0 if a.cmd == "urgent" else 5)
+    elif a.cmd == "cancel":
+        cmd_cancel(a)
     elif a.cmd == "ahead":
         if not os.path.isdir(TICKETS):
             print(0)

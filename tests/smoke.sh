@@ -879,6 +879,42 @@ if command -v systemd-run >/dev/null && [ -S "${XDG_RUNTIME_DIR:-/x}/bus" ] && s
 fi
 check "herdr-scope: HERDR_SCOPE=0이면 그대로 실행" "[ \"\$(HERDR_SCOPE=0 '$P/.agents/bin/herdr-scope' x 1G -- echo ok)\" = ok ]"
 
+echo "== 넓은 패턴 kill 막기"
+GK="$P/.agents/hooks/guard-kill.py"; GM="$WORK/gk-main"; git init -q -b main "$GM"; git -C "$GM" -c user.email=t@t -c user.name=t commit -q --allow-empty -m i
+git -C "$GM" worktree add -q "$WORK/gk-wt" -b gkwt
+gk() { # 작업 위치 명령 → hook 끝 코드(HERDR_ROLE=worker-1)
+  jq -n --arg c "$2" --arg d "$1" '{tool_name: "Bash", cwd: $d, tool_input: {command: $c}}' | HERDR_ROLE=worker-1 "$GK" >"$WORK/gk.err" 2>&1
+}
+blocked() { gk "$1" "$2"; [ $? -eq 2 ]; }
+passes() { gk "$1" "$2"; [ $? -eq 0 ]; }
+check "막음: 패턴으로 대기열 실행 전체를 죽이는 pkill(실제 사고)" "blocked '$GM' 'pkill -f \"herdr-queue run --role\"' && grep -q '막음' '$WORK/gk.err' && grep -q 'herdr-queue cancel' '$WORK/gk.err'"
+check "막음: linked worktree에서도 경로 없는 패턴" "blocked '$WORK/gk-wt' 'cd app && pkill -f \"make app-it\"'"
+check "막음: killall, pkill -u, pkill 이름" "blocked '$GM' 'killall node' && blocked '$GM' 'pkill -9 -u \$USER' && blocked '$GM' 'sleep 1; pkill chrome'"
+check "막음: pgrep·ps 결과를 kill에 넘김" "blocked '$GM' 'kill \$(pgrep -f vite)' && blocked '$GM' 'pgrep -f vite | xargs kill -9' && blocked '$GM' 'ps aux | grep vite | awk \"{print \\\$2}\" | xargs kill'"
+check "막음: 메인 체크아웃 경로로 좁혀도(세션의 명령줄에 들어 있다)" "blocked '$GM' 'pkill -f \"$GM/frontend\"' && blocked '$GM' 'pkill -f \"$GM\"'"
+check "막음: worktree 최상위 경로만(자기 세션 명령줄에도 맞는다)" "blocked '$WORK/gk-wt' 'pkill -f \"$WORK/gk-wt\"'"
+check "통과: PID로 죽이는 kill" "passes '$GM' 'kill 12345' && passes '$GM' 'sleep 100 & kill -9 \$!' && passes '$GM' 'kill -TERM \$pid; wait \$pid'"
+check "통과: 자기 worktree 경로로 좁힌 pkill·pgrep" "passes '$WORK/gk-wt' 'pkill -f \"$WORK/gk-wt/node_modules/.bin/vite\"' && passes '$WORK/gk-wt' 'pkill -f \"\$PWD/app/build\"' && passes '$WORK/gk-wt' 'kill \$(pgrep -f \"$WORK/gk-wt/server\")'"
+check "통과: pkill -P <PID>(그 PID의 자식만)와 명령 안의 글자" "passes '$GM' 'pkill -P 4242' && passes '$GM' 'git commit -m \"pkill -f x 금지\"' && passes '$GM' 'grep -n pkill README.md' && passes '$GM' 'echo killall'"
+check "역할이 없는 세션에는 적용하지 않음" "jq -n '{tool_name:\"Bash\",cwd:\"$GM\",tool_input:{command:\"pkill -f x\"}}' | env -u HERDR_ROLE '$GK'"
+check "입력이 깨졌거나 Bash가 아니면 조용히 넘어감" "echo 'not json' | HERDR_ROLE=worker-1 '$GK' && echo '{}' | HERDR_ROLE=worker-1 '$GK'"
+check "hook 설정: Claude Bash 사전 hook" "jq -e '.hooks.PreToolUse[] | select(.matcher == \"Bash\") | .hooks[] | select(.command | endswith(\"guard-kill.py\"))' '$P/.claude/settings.json' >/dev/null"
+check "hook 설정: Codex Bash 사전 hook" "jq -e '.hooks.PreToolUse[] | select(.matcher == \"^Bash\$\") | .hooks[] | select(.command | endswith(\"guard-kill.py\"))' '$P/.codex/hooks.json' >/dev/null"
+# herdr-queue cancel: 부른 세션의 프로젝트·역할 표만 멈춘다(가짜 프로세스, 시험 전용 대기열 디렉터리)
+export HERDR_HEAVY_DIR="$WORK/heavy-cancel" HERDR_HEAVY_POLL=0.1 HERDR_PROJECT=demo
+Q="$P/.agents/bin/herdr-queue"; mkdir -p "$HERDR_HEAVY_DIR"
+"$Q" run --role ra --sha aaa -- sleep 30 2>/dev/null & qa=$!; sleep 0.5
+"$Q" run --project other --role ra --sha bbb -- sleep 30 2>/dev/null & qo=$!; sleep 0.3
+"$Q" run --role rb --sha ccc -- sleep 30 2>/dev/null & qb=$!; sleep 0.3
+"$Q" run --role ra --sha ddd -- sleep 30 2>/dev/null & qw=$!; sleep 0.3
+out="$(HERDR_PROJECT=demo HERDR_ROLE=ra "$Q" cancel 2>&1)"; sleep 1
+check "cancel: 부른 세션의 프로젝트·역할 표(실행과 대기)만 멈춘다" "! kill -0 $qa 2>/dev/null && ! kill -0 $qw 2>/dev/null && kill -0 $qo 2>/dev/null && kill -0 $qb 2>/dev/null && printf '%s' \"\$out\" | grep -q '취소: demo/ra'"
+check "cancel: 멈춘 실행의 자식(명령)도 함께 끝나고 다른 역할·프로젝트의 표는 그대로" "! pgrep -f 'sleep 30' | grep -q '^\$' || [ \"\$(HERDR_PROJECT=demo '$Q' | grep -cE 'ra|rb')\" -ge 2 ]"
+kill $qo $qb 2>/dev/null; wait 2>/dev/null
+out="$(HERDR_PROJECT=demo HERDR_ROLE=ra "$Q" cancel 2>&1)"
+check "cancel: 취소할 것이 없으면 그렇게 알림" "printf '%s' \"\$out\" | grep -q '취소할 검사가 없다'"
+check "cancel: 프로젝트·역할을 모르는 세션은 거부" "! env -u HERDR_ROLE -u HERDR_PROJECT '$Q' cancel >/dev/null 2>&1"
+unset HERDR_HEAVY_DIR HERDR_HEAVY_POLL HERDR_PROJECT HERDR_ROLE
 echo "== 보기 패널"
 check "--here는 사용자 패널을 기준으로 넘김" "env -u HC_TERMINAL_ID HERDR_PANE_ID=w9:p1 '$S' --dry-run --here commander codex | grep -q 'HERDR_VIEW_ANCHOR=w9:p1'"
 check "자식 세션에 기준 패널 전달" "HERDR_VIEW_ANCHOR=w9:p1 HERDR_PANE_ID=w0:p0 '$S' --dry-run worker-1 codex | grep -q 'HERDR_VIEW_ANCHOR=w9:p1'"

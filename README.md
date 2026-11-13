@@ -209,6 +209,7 @@ Commander에게 목표를 말한다. Orchestrator가 없으면 Commander가 띄�
 .agents/bin/herdr-queue                    # 실행·대기 중인 검사, 순번, 경과
 .agents/bin/herdr-queue urgent worker-3    # 그 역할의 검사를 맨 앞으로(대기 중이 아니면 다음 검사 한 번)
 .agents/bin/herdr-queue run --role worker-1 -- make test-int   # 무거운 명령을 대기열 아래서 직접 돌린다
+.agents/bin/herdr-queue cancel                   # 내 세션($HERDR_PROJECT/$HERDR_ROLE)이 넣은 검사만 멈춘다. pkill -f 패턴으로 멈추지 않는다
 ```
 
 - 동시에 도는 수는 `HERDR_HEAVY_SLOTS`(기본 1)다. 순서는 급함, 들어온 순이다. 프로세스가 죽은 자리는 다음 검사가 치운다.
@@ -302,6 +303,7 @@ core/                 프로젝트에 복사되는 원본
   bin/herdr-usage     토큰 사용량 집계(세션 장부·보고 경계 + transcript)
   bin/herdr-flow      작업 흐름과 대기 측정(받은 지시·보고·검사 기록)
   bin/herdr-queue     무거운 검사의 공용 대기열(자리·급함·시작 가드·메모리 상한)
+  hooks/guard-kill.py 넓은 패턴으로 프로세스를 죽이는 명령(pkill·killall·pgrep→kill)을 막는 Bash 사전 hook
   bin/herdr-verify    독립 검증 서브에이전트(패치별 판정, 도구 한도와 대체 도구)
   bin/herdr-scope     명령을 자기 systemd scope(cgroup)에서 돌린다
   bin/herdr-watch     hc 밖 감시자(Orchestrator 재기동, Commander 부재 알림, CLEAR 대행)
