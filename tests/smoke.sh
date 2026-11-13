@@ -866,8 +866,18 @@ check "Commander가 없고 전하지 못한 보고가 있으면 사용자에게 
 n="$(grep -c '결정 요청' "$D/notify.log")"; wo
 check "다시 알리기는 HERDR_WATCH_RENOTIFY 간격" "[ \"\$(grep -c '결정 요청' '$D/notify.log')\" = $n ]"
 echo '{"terminals":[{"address":"t61","state":"live","status":"done","created_ms":9}]}' >"$WD/orch.live"; echo '{"status":{"app":"claude-code","state":"done"}}' >"$WD/get.json"
-echo "$(($(date +%s) - 4000))" >"$D/.orchestrator.clear-request"; : >"$WLOG"; wo
+req=$(($(date +%s) - 4000)); echo "$req" >"$D/.orchestrator.clear-request"; : >"$WLOG"
+# 요청 앞의 clear, 요청 뒤의 compact, 다른 역할의 clear는 처리로 세지 않는다
+rm -f "$D/sessions.tsv"; printf 'epoch\ttime\trole\ttool\tmodel\tsession_id\tsource\ttranscript\n' >"$D/sessions.tsv"
+printf '%s\tt\torchestrator\tclaude\tm\ts1\tclear\t\n%s\tt\torchestrator\tclaude\tm\ts1\tcompact\t\n%s\tt\tworker-1\tclaude\tm\ts2\tclear\t\n' "$((req - 60))" "$((req + 60))" "$((req + 60))" >>"$D/sessions.tsv"
+wo
 check "처리되지 않은 [CLEAR 요청]은 감시자가 쉬는 Orchestrator를 대신 정리" "grep -qx 'keys t61 / c l e a r enter' '$WLOG' && grep -qx 'send t61 재개' '$WLOG' && [ ! -f '$D/.orchestrator.clear-request' ]"
+# Commander가 herdr-clear 없이 직접 /clear를 쳐 표시가 남은 경우: 요청 뒤 Orchestrator의 clear 기록이 있으면 다시 정리하지 않음
+echo "$req" >"$D/.orchestrator.clear-request"; : >"$WLOG"
+printf '%s\tt\torchestrator\tclaude\tm\ts3\tclear\t\n' "$((req + 30))" >>"$D/sessions.tsv"
+wo
+check "이미 정리된 [CLEAR 요청]으로 Orchestrator를 두 번 정리하지 않고 표시를 지움" "! grep -q '^keys' '$WLOG' && ! grep -q '^send' '$WLOG' && [ ! -f '$D/.orchestrator.clear-request' ] && grep -q '이미 정리돼 지움' '$D/watch.log'"
+rm -f "$D/sessions.tsv"
 echo "$(date +%s)" >"$D/.orchestrator.clear-request"; echo '{"terminals":[{"address":"t7","state":"live"}]}' >"$WD/cmd.live"; : >"$WLOG"; wo
 check "Commander가 있고 시한 전이면 감시자는 정리하지 않음" "! grep -q '^keys' '$WLOG' && [ -f '$D/.orchestrator.clear-request' ]"
 check "HERDR_WATCH=0이면 감시자를 띄우지 않음" "[ -z \"\$(HERDR_WATCH=0 '$WT' --ensure 2>&1)\" ]"
