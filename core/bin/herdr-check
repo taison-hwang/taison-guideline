@@ -8,19 +8,21 @@
 #                              영향을 받는 검사만 돌리고 AFFECTED로 기록한다. 명령이 없거나 끝 코드 4(범위를 정할 수 없음)면 전체 검사를 돈다
 #   herdr-check --light <기준>  경량 작업의 관문: 바뀐 파일에 빠른 파일 검사(HERDR_CHECK_FILE_CMD)만 돌리고 LIGHT로 기록한다
 #                              --affected·--light는 커밋된 상태에서만 돈다. 전체 회귀는 병합 뒤 기본 브랜치에서 돈다(herdr-report)
-# 끝 코드: 0 통과, 1 실패, 3 검사 명령 미설정. 기록은 HEAD SHA와 커밋 안 된 변경 유무에 묶인다.
+# 끝 코드: 0 통과, 1 실패, 3 검사 명령 미설정, 5 디스크 여유 부족(검사를 돌리지 않음). 기록은 HEAD SHA와 커밋 안 된 변경 유무에 묶인다.
 # --status-of는 이 역할의 기록에 없으면 같은 프로젝트의 다른 역할 기록(병합 뒤 검사 merged 포함)에서 찾는다.
 # 전체 검사 = 가벼운 단계(HERDR_CHECK_CMD, 잠금 없음) 다음 무거운 단계(HERDR_CHECK_HEAVY_CMD, 공용 대기열 herdr-queue 아래).
 # 시간 제한(HERDR_CHECK_TIMEOUT)은 두 단계의 실행 시간 합에만 건다. 대기열에서 기다린 시간은 세지 않는다.
 # 마지막 PASS 이후 바뀐 파일이 모두 HERDR_CHECK_SKIP_PATHS에 맞으면 다시 돌리지 않고 그 PASS를 이어받는다.
+# 디스크 가드: 전체 검사 전에 저장소와 하네스 캐시가 있는 파일 시스템의 여유가 HERDR_MIN_DISK_GB 미만이면 하네스 캐시를
+# 정리(herdr-clean)하고 다시 본다. 그래도 모자라면 검사를 돌리지 않고 끝 코드 5로 끝낸다(코드 문제가 아니다. [차단]으로 올린다).
 set -uo pipefail
 
 SELF_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HERDR_CHECK_CMD="" HERDR_CHECK_HEAVY_CMD="" HERDR_CHECK_FILE_CMD="" HERDR_CHECK_AFFECTED_CMD="" HERDR_CHECK_TIMEOUT=3600 HERDR_CHECK_SKIP_PATHS=""
-HERDR_HEAVY_SLOTS=1 HERDR_HEAVY_MIN_MEM_GB=0 HERDR_HEAVY_MAX_LOAD=0
+HERDR_HEAVY_SLOTS=1 HERDR_HEAVY_MIN_MEM_GB=0 HERDR_HEAVY_MAX_LOAD=0 HERDR_HEAVY_MEM_MAX=50% HERDR_MIN_DISK_GB=0
 # shellcheck disable=SC1091
 [[ -f "$SELF_ROOT/.agents/harness.env" ]] && . "$SELF_ROOT/.agents/harness.env"
-export HERDR_HEAVY_SLOTS HERDR_HEAVY_MIN_MEM_GB HERDR_HEAVY_MAX_LOAD
+export HERDR_HEAVY_SLOTS HERDR_HEAVY_MIN_MEM_GB HERDR_HEAVY_MAX_LOAD HERDR_HEAVY_MEM_MAX
 configured() { [[ -n "$HERDR_CHECK_CMD" || -n "$HERDR_CHECK_HEAVY_CMD" ]]; }
 
 project="${HERDR_PROJECT:-$(basename "$SELF_ROOT")}"
@@ -191,6 +193,24 @@ fi
 if [[ "$status" == PASS && -n "$from" ]] || inherit; then
   echo "검사 PASS ${key:0:12} (바뀐 파일이 모두 HERDR_CHECK_SKIP_PATHS라 앞 PASS를 이어받음)" >&2
   exit 0
+fi
+disk_free_gb() { # 경로… → 그 중 가장 적은 여유(GB, 정수)
+  df -Pk "$@" 2>/dev/null | awk 'NR > 1 { g = int($4 / 1048576); if (m == "" || g < m) m = g } END { print (m == "" ? 999999 : m) }'
+}
+if [[ "${HERDR_MIN_DISK_GB:-0}" -gt 0 ]]; then
+  cache="${XDG_CACHE_HOME:-$HOME/.cache}"; mkdir -p "$cache"
+  free="$(disk_free_gb "$top" "$cache")"
+  if [[ "$free" -lt "$HERDR_MIN_DISK_GB" ]]; then
+    echo "디스크 여유 ${free}GB < HERDR_MIN_DISK_GB ${HERDR_MIN_DISK_GB}GB. 하네스 캐시를 정리한다" >&2
+    HERDR_PROJECT="$project" "$(dirname "${BASH_SOURCE[0]}")/herdr-clean" >&2
+    free="$(disk_free_gb "$top" "$cache")"
+    if [[ "$free" -lt "$HERDR_MIN_DISK_GB" ]]; then
+      { echo "디스크 여유 ${free}GB < HERDR_MIN_DISK_GB ${HERDR_MIN_DISK_GB}GB라 검사를 돌리지 않았다. 코드 문제가 아니다."
+        echo "하네스 캐시 정리(herdr-clean) 뒤에도 모자라다. 그 밖의 정리(Docker 캐시, 빌드 산출물 등)는 사용자 승인 대상이므로 [차단]으로 올린다."
+        df -h "$top" "$cache" 2>/dev/null; } | tee "$log" >&2
+      exit 5
+    fi
+  fi
 fi
 started=$(date +%s) rc=0 queued=0
 : >"$log"

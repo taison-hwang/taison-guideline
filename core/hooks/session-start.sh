@@ -41,6 +41,10 @@ skill="${HERDR_HOME:-.}/.agents/skills/running-herdr-autopilot"
 {
   echo "[herdr 역할] 이 세션의 역할은 $HERDR_ROLE, 프로젝트는 $HERDR_PROJECT 다."
   echo "먼저 $skill/SKILL.md 와 $skill/references/$role_file.md 를 끝까지 읽고 따른다. ~/.agents/skills/operating-herdr-sessions 는 이 프로젝트에 적용되지 않으므로 전역 지침이 가리켜도 읽지 않는다."
+  if [ "$HERDR_ROLE" = commander ] && [ -s "$dir/pending-decisions.md" ]; then
+    echo "[전하지 못한 보고] Commander가 없는 동안 Orchestrator가 남긴 보고가 $(grep -c '^- ' "$dir/pending-decisions.md") 건 있다($dir/pending-decisions.md)."
+    echo "먼저 그 파일을 읽어 결정 요청을 사용자에게 전하고, 전한 줄은 pending-decisions.done.md 끝으로 옮긴다(감시자가 이 파일이 비어 있지 않으면 계속 알린다)."
+  fi
   if [ "$role_file" = worker ]; then
     echo '모든 턴은 herdr-report "[완료] <내용>" 로 끝낸다. 화면에 쓴 글은 아무도 읽지 않는다.'
   fi

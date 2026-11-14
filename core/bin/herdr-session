@@ -22,6 +22,8 @@ HERDR_ORCHESTRATOR_TOOL="" HERDR_ORCHESTRATOR_MODEL="" HERDR_ORCHESTRATOR_EFFORT
 HERDR_WORKER_TOOL="" HERDR_WORKER_MODEL="" HERDR_WORKER_EFFORT=""
 # 1이면 Orchestrator·워커를 띄울 때 Commander 패널 옆에 herdr 패널을 나눠 보기 전용으로 붙인다.
 HERDR_VIEW_PANES=1
+# 세션 scope의 메모리 상한(systemd MemoryMax). 비우면 상한 없이 세션마다 cgroup만 나눈다(herdr-scope)
+HERDR_SESSION_MEM_MAX=""
 # shellcheck disable=SC1091
 [[ -f "$SELF_ROOT/.agents/harness.env" ]] && . "$SELF_ROOT/.agents/harness.env"
 
@@ -44,18 +46,25 @@ usage() {
   --here             사용자가 herdr 화면에서 연 패널에서 그 자리에 실행한다. hc 터미널이 아니면 hc 터미널을 열어 실행한다
   --outlive-parent   (기본값) 부모 세션이 끝나도 살아 있게 한다. 예전 명령과 맞추려고 받기만 한다
   --full             Claude의 기본 맥락 축소(claude.ai 커넥터·Chrome·플러그인 끔)를 하지 않는다
+  --no-commander     Commander 없이 Orchestrator를 띄운다. 감시자(herdr-watch)의 자동 재기동과 시험용이다
   --dry-run          실행하지 않고 명령만 출력한다
+
+  Orchestrator는 같은 project의 Commander(role=commander 라벨)가 있어야 띄운다. 없으면 보고와 결정 요청이 사용자에게
+  닿지 않는다(ohmystock 2026-11-11, 27시간 정지). herdr 패널에서 --here commander로 Commander를 먼저 띄운다.
+  세션은 각자 systemd 사용자 scope에서 돈다(herdr-scope). 메모리가 모자랄 때 그 세션만 끝나고 나머지는 남는다.
+  Commander·Orchestrator를 띄우면 hc 밖의 감시자(herdr-watch)도 띄운다.
 EOF
   exit 2
 }
 
-HERE=0 DRY=0 FULL=0 TASK="" MODEL_OVERRIDE=""
+HERE=0 DRY=0 FULL=0 TASK="" MODEL_OVERRIDE="" NO_COMMANDER=0
 while [[ $# -gt 0 && "$1" == --* ]]; do
   case "$1" in
     --here) HERE=1 ;;
     --dry-run) DRY=1 ;;
     --outlive-parent) ;;
     --full) FULL=1 ;;
+    --no-commander) NO_COMMANDER=1 ;;
     --task) [[ $# -ge 2 ]] || usage; TASK="$2"; shift ;;
     --model) [[ $# -ge 2 ]] || usage; MODEL_OVERRIDE="$2"; shift ;;
     *) usage ;;
@@ -151,7 +160,20 @@ UNSETS=()
 for v in CLAUDECODE CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_SESSION_ID CLAUDE_CODE_SESSION_ATTENDED \
   CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_EXECPATH CLAUDE_CODE_MESSAGING_SOCKET CLAUDE_CODE_MESSAGING_TOKEN \
   CLAUDE_CODE_SSE_PORT CLAUDE_PID CLAUDE_EFFORT HERDR_PANE_ID; do UNSETS+=(-u "$v"); done
-CMD=(env "${UNSETS[@]}" "${ENVS[@]}" "${AGENT[@]}")
+# 세션마다 자기 cgroup(systemd 사용자 scope)에서 돌게 한다. hc holder 유닛 하나에 모두 있으면 OOM 때 통째로 죽는다
+# hc run --cwd는 상대 경로의 프로그램을 그 폴더 기준으로 찾으므로 절대 경로로 넘긴다
+BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CMD=("$BIN/herdr-scope" "$PROJECT-$ROLE" "$HERDR_SESSION_MEM_MAX" -- env "${UNSETS[@]}" "${ENVS[@]}" "${AGENT[@]}")
+WATCH="$BIN/herdr-watch"
+
+if [[ "$KIND" == orchestrator && $NO_COMMANDER -eq 0 && $DRY -eq 0 ]] && command -v hc >/dev/null; then
+  if [[ "$(hc ls --json --label "project=$PROJECT" --label role=commander 2>/dev/null | jq '.terminals | length' 2>/dev/null || echo 0)" -eq 0 ]]; then
+    echo "거부: $PROJECT에 Commander(role=commander 라벨)가 없다. 이대로 띄우면 Orchestrator의 보고와 결정 요청이 사용자에게 닿지 않는다." >&2
+    echo "herdr 화면에서 패널을 열고 .agents/bin/herdr-session --here commander 로 Commander를 띄운 뒤, 그 Commander가 Orchestrator를 띄운다." >&2
+    echo "실행기 밖에서 연 세션(그냥 연 claude·codex)은 라벨이 없어 Commander로 찾지 못한다. Commander 없이 띄우려면 --no-commander." >&2
+    exit 2
+  fi
+fi
 
 if [[ $HERE -eq 1 ]]; then
   # hc 터미널 안이면 그 터미널에 라벨을 붙인다. herdr 패널의 일반 셸처럼 hc 터미널이 아니면
@@ -167,6 +189,7 @@ if [[ $HERE -eq 1 ]]; then
     exit 0
   fi
   command -v hc >/dev/null || { echo "hc(herdr-core)가 없다. 설치: curl -fsSL https://releases.herdr.dev/core/install.sh | sh" >&2; exit 1; }
+  [[ "$KIND" != worker ]] && "$WATCH" --ensure >&2 || true
   if [[ -z "${HC_TERMINAL_ID:-}" ]]; then
     addr="$("${HERE_RUN[@]}" "${CMD[@]}" | jq -r '.address // empty')"
     [[ -n "$addr" ]] || { echo "hc 터미널을 열지 못했다" >&2; exit 1; }
@@ -199,6 +222,7 @@ fi
 addr="$("${RUN[@]}" -- "${CMD[@]}" | jq -r '.address // empty')"
 [[ -n "$addr" ]] || { echo "hc 터미널을 열지 못했다" >&2; exit 1; }
 echo "$addr"
+[[ "$KIND" != worker ]] && "$WATCH" --ensure >&2 || true
 # 보기 패널은 부가 기능이라 실패해도 세션 띄우기를 실패로 만들지 않는다.
 if [[ "$HERDR_VIEW_PANES" == 1 && -n "$VIEW_ANCHOR" ]]; then
   "$(dirname "${BASH_SOURCE[0]}")/herdr-view" "$VIEW_ANCHOR" "$addr" "$ROLE" >&2 || true

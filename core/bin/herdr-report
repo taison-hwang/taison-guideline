@@ -5,6 +5,9 @@
 #   herdr-report "[병합완료] A-01 <SHA> <요약>"   기본 브랜치에 들어간 SHA를 알린다. 그 SHA의 검사 PASS 기록을 붙이고,
 #                                                기록이 없으면 그 SHA를 뒤에서 검사해 PASS면 보낸다
 # 보고 대상: 워커 → Orchestrator, Orchestrator → Commander. 찾지 못하면 실패로 끝낸다.
+# Orchestrator의 보고는 Commander가 없거나 보낼 수 없으면 <handoff>/pending-decisions.md에 남기고 사용자에게 알린다
+# (herdr-notify). Commander가 있어도 HERDR_NOTIFY_TAGS(기본 "차단 완료")의 말머리는 사용자에게도 알린다. 사용자가 화면 앞에
+# 없으면 Commander 화면의 질문도 보지 못하기 때문이다. Orchestrator의 [CLEAR 요청]은 감시자(herdr-watch)가 볼 표시를 남긴다.
 # 맥락 크기와 compact 횟수는 hook이 남긴 값을 자동으로 붙인다. Orchestrator가 세션 장부에 옮겨 적는다.
 # 워커의 [완료]는 보내기 전에 관문을 거친다: 커밋 안 된 변경이 없고 검사(herdr-check)가 지금 HEAD에서
 # 통과해야 보내며, 결과를 "검사 PASS <SHA>"로 붙인다. 검사 명령이 없으면 막지 않고 "검사 미설정"을 붙인다.
@@ -54,8 +57,8 @@ message="$1"
 dir="$HOME/.claude/herdr/handoff/$HERDR_PROJECT"
 mkdir -p "$dir"
 check="$BIN/herdr-check"
-HERDR_LIGHT_MAX_LINES=150 HERDR_LIGHT_DENY_PATHS=""
-eval "$( [[ -f "$BIN/../harness.env" ]] && . "$BIN/../harness.env" >/dev/null 2>&1; declare -p HERDR_LIGHT_MAX_LINES HERDR_LIGHT_DENY_PATHS 2>/dev/null)"
+HERDR_LIGHT_MAX_LINES=150 HERDR_LIGHT_DENY_PATHS="" HERDR_NOTIFY_TAGS="차단 완료"
+eval "$( [[ -f "$BIN/../harness.env" ]] && . "$BIN/../harness.env" >/dev/null 2>&1; declare -p HERDR_LIGHT_MAX_LINES HERDR_LIGHT_DENY_PATHS HERDR_NOTIFY_TAGS 2>/dev/null)"
 
 send() { # 메시지. 보고 대상에게 보내고 보고 기록을 남긴다
   local message="$1" target parent tokens compacts meta tag task sha result
@@ -68,20 +71,36 @@ send() { # 메시지. 보고 대상에게 보내고 보고 기록을 남긴다
     target="$(find_role commander)"
     [[ -n "$target" ]] && message="[차단] Orchestrator 없음. 원래 보고: $message"
   fi
-  [[ -n "$target" ]] || { echo "보고 대상($want)을 찾지 못했다." >&2; return 1; }
+  [[ -n "$target" || "$want" == commander ]] || { echo "보고 대상($want)을 찾지 못했다." >&2; return 1; }
 
   tokens="$(cat "$dir/.$HERDR_ROLE.ctx" 2>/dev/null || true)"
   compacts="$(cat "$dir/.$HERDR_ROLE.compacts" 2>/dev/null || echo 0)"
   meta="$HERDR_ROLE ${HC_TERMINAL_ID:-}"
   [[ -n "$tokens" ]] && meta="$meta · ctx $((tokens / 1000))k"
-  meta="$meta · compact $compacts"
+  meta="$meta · compact $compacts · $(date '+%m-%d %H:%M')"
 
-  hc send "$target" "$message ($meta)" >/dev/null || { echo "$target 에 보내지 못했다." >&2; return 1; }
+  tag="${message#\[}"; tag="${tag%%\]*}"
+  [[ "$message" == "["*"]"* ]] || tag=""
+  if [[ -n "$target" ]] && hc send "$target" "$message ($meta)" >/dev/null; then
+    sent_to="$want($target)"
+    if [[ "$want" == commander && -n "$tag" && " $HERDR_NOTIFY_TAGS " == *" $tag "* ]]; then
+      "$BIN/herdr-notify" "$tag" "${message:0:300}" >/dev/null 2>&1 || true
+    fi
+  elif [[ "$want" == commander ]]; then
+    # Commander가 없다. 결정 요청이 화면 안에서 사라지지 않게 파일에 남기고 사용자에게 알린다(ohmystock 2026-11-11, 27시간 정지)
+    printf -- '- %s %s (%s)\n' "$(date '+%Y-%m-%d %H:%M')" "${message//$'\n'/ }" "$meta" >>"$dir/pending-decisions.md"
+    "$BIN/herdr-notify" "Commander 없음: [${tag:-보고}]" "${message:0:300} — herdr 패널에서 .agents/bin/herdr-session --here commander 로 Commander를 띄우면 전달된다" >/dev/null 2>&1 || true
+    "$BIN/herdr-watch" --ensure >/dev/null 2>&1 || true
+    sent_to="pending-decisions.md(Commander 없음, 사용자에게 알림)"
+    echo "Commander가 없어 $dir/pending-decisions.md에 남기고 사용자에게 알렸다. 답을 기다리는 동안 그 결정과 무관한 일을 계속한다." >&2
+  else
+    echo "$target 에 보내지 못했다." >&2; return 1
+  fi
+  [[ "$HERDR_ROLE" == orchestrator && "$tag" == "CLEAR 요청" ]] && date +%s >"$dir/.orchestrator.clear-request"
   # 턴 종료 hook이 이 턴의 보고로 센다. 뒤에서 도는 검사의 자동 보고는 세지 않는다(그사이 세션이 하던 턴의 보고가 아니다)
   [[ $mode == run ]] || date +%s >"$dir/.$HERDR_ROLE.reported"
   # 사용량 집계(herdr-usage)가 사용량을 작업에 붙이도록 보낸 보고의 경계를 남긴다. 실패해도 보고는 이미 갔다.
   {
-    tag="${message#\[}"; tag="${tag%%\]*}"
     task="${message#*\] }"; task="${task%% *}"
     [[ "$message" == "["*"] "* ]] || { tag=""; task=""; }
     tag="${tag//$'\t'/ }"; task="${task//$'\t'/ }"; task="${task%%$'\n'*}"
@@ -93,7 +112,7 @@ send() { # 메시지. 보고 대상에게 보내고 보고 기록을 남긴다
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$(date +%Y-%m-%dT%H:%M:%S%z)" "$HERDR_ROLE" \
       "$(cat "$dir/.$HERDR_ROLE.session" 2>/dev/null)" "$tag" "$task" "$sha" "$result" | tr -d '\r' >>"$dir/reports.tsv"
   } 2>/dev/null || true
-  echo "보냄: $want($target)"
+  echo "보냄: $sent_to"
 }
 
 task_of() { local t="${1#*\] }"; printf '%s' "${t%% *}"; }
@@ -188,6 +207,7 @@ if [[ $mode == run ]]; then
     [[ -n "${rc:-}" ]] || { (cd "$wt" && HERDR_ROLE=merged "$check"); rc=$?; }
     case $rc in
       0 | 3) echo "병합 뒤 전체 검사 끝(${head:0:12}, 끝 코드 $rc)" ;;
+      5) send "[진행] $task 병합 뒤 전체 검사를 돌리지 못했다(디스크 여유 부족, ${head:0:12}). 로그: $HERDR_CHECK_LOG" ;;
       *) send "[진행] $task 병합 뒤 전체 검사 FAIL ${head:0:12}(기본 브랜치, $short 포함). 기본 브랜치가 깨졌을 수 있다. 로그: $HERDR_CHECK_LOG" ;;
     esac
     exit 0
@@ -229,12 +249,17 @@ if [[ $mode == run ]]; then
           *)
             why="$(tail -n 3 "$vout" 2>/dev/null | tr '\n' ' ')"
             [[ $vrc -eq 5 ]] && why="검증 횟수 초과. 남은 지적과 반박 근거를 적어 [차단]으로 올린다"
+            [[ $vrc -eq 6 ]] && why="검증 도구가 판정을 남기지 못했다(하네스·도구 오류, 횟수에 세지 않음). $why 원인을 풀면 herdr-report --bg로 다시 보내고, 반복되면 [차단]"
+            [[ $vrc -eq 7 ]] && why="$why — 검증을 띄우지 않았다(도구 한도 또는 도구 오류 반복, 횟수에 세지 않음). 풀 수 없으면 [차단]으로 올린다"
             [[ -n "${HC_TERMINAL_ID:-}" ]] && hc send "$HC_TERMINAL_ID" "[판정] $task 없음 $short — ${message%%\]*}]를 보내지 않았다. 독립 검증이 판정을 남기지 못했다(끝 코드 $vrc): $why 출력: $vout" >/dev/null
             send "[진행] $task 커밋 $short 독립 검증 실패(판정 없음), 작성 세션이 확인 중"
             exit 0 ;;
         esac
       fi
       send "$message · $label" ;;
+    5) [[ -n "$vpid" ]] && { kill -TERM "$vpid" 2>/dev/null; wait "$vpid" 2>/dev/null; }
+       [[ -n "${HC_TERMINAL_ID:-}" ]] && hc send "$HC_TERMINAL_ID" "[검사 보류] $task 커밋 $short — 디스크 여유가 모자라 검사를 돌리지 않았다(코드 문제 아님). 로그: $HERDR_CHECK_LOG. 하네스 캐시 정리로도 모자라므로 herdr-report \"[차단] $task 디스크 여유 부족 …\"로 올린다." >/dev/null
+       send "[진행] $task 커밋 $short 디스크 여유 부족으로 검사 보류" ;;
     *) [[ -n "$vpid" ]] && { kill -TERM "$vpid" 2>/dev/null; wait "$vpid" 2>/dev/null; }
        tag="${message%%\]*}]"
        note="[검사 FAIL] $task 커밋 $short — $tag를 보내지 않았다. 로그: $HERDR_CHECK_LOG"
@@ -335,6 +360,7 @@ if [[ $gated -eq 1 ]]; then
       case $rc in
         0) message="$message · $(state_label "$("$check" --status)")" ;;
         3) message="$message · 검사 미설정" ;;
+        5) echo "디스크 여유가 모자라 검사를 돌리지 않았다(코드 문제 아님). herdr-report \"[차단] <작업> 디스크 여유 부족 …\"로 올린다." >&2; exit 1 ;;
         *) echo "검사가 실패해 [완료]를 보내지 않았다. 고친 뒤 커밋하고 다시 보낸다. 고칠 수 없으면 [차단]으로 이유를 보낸다." >&2; exit 1 ;;
       esac
       ;;

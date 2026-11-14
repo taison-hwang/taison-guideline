@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# 명령을 자기 systemd 사용자 scope(cgroup)에서 돌린다. 실행기가 PATH에 넣으므로 어느 폴더에서나 쓴다.
+#   herdr-scope <이름> [메모리 상한] -- <명령…>
+# hc 터미널의 프로그램은 모두 hc holder 유닛 하나에 들어간다. 메모리가 모자라면 systemd-oomd가 그 유닛을 통째로 죽여
+# 모든 세션이 함께 끝난다(ohmystock 2026-11-12, 214개). 세션·무거운 검사·검증 서브에이전트를 각자 scope에 넣으면
+# oomd는 가장 큰 scope 하나만 죽이고 holder와 나머지 세션은 남는다. 메모리 상한(MemoryMax, 예: 8G, 50%)을 주면
+# 그 scope만 상한에서 막힌다. 0이나 빈 값이면 상한 없이 나누기만 한다.
+# systemd 사용자 관리자가 없거나(macOS, 컨테이너) HERDR_SCOPE=0이면 그대로 실행한다. 명령은 exec로 바뀌므로
+# PID와 프로세스 묶음이 그대로다(부른 쪽의 시간 제한·killpg가 그대로 듣는다).
+set -uo pipefail
+[[ $# -ge 3 ]] || { sed -n '2,3p' "${BASH_SOURCE[0]}" | sed 's/^# *//' >&2; exit 2; }
+name="$1" mem="$2"
+shift 2
+[[ "${1:-}" == -- ]] && shift
+[[ $# -ge 1 ]] || { echo "돌릴 명령이 없다" >&2; exit 2; }
+
+if [[ "${HERDR_SCOPE:-1}" == 1 ]] && command -v systemd-run >/dev/null && [[ -S "${XDG_RUNTIME_DIR:-/nonexistent}/bus" ]]; then
+  unit="herdr-$(printf '%s' "$name" | tr -c 'A-Za-z0-9_.-' '_' | cut -c1-80)-$$-$RANDOM"
+  props=(--user --scope --quiet --collect)
+  [[ -n "$mem" && "$mem" != 0 ]] && props+=(-p "MemoryMax=$mem")
+  # scope를 만들 수 없으면(사용자 관리자 연결 실패, 잘못된 상한) 나누지 않고 돈다. 막지 않는다
+  if systemd-run "${props[@]}" --unit "$unit-probe" -- true 2>/dev/null; then
+    exec systemd-run "${props[@]}" --unit "$unit" -- "$@"
+  fi
+  echo "herdr-scope: systemd scope를 만들지 못해 그대로 실행한다($unit)" >&2
+fi
+exec "$@"

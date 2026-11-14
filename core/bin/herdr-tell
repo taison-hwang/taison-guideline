@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Commander가 Orchestrator(또는 다른 역할)에 메시지를 보낸다. 보낸 시각을 하네스가 붙인다.
+#   herdr-tell "<메시지>"                Orchestrator에 보낸다
+#   herdr-tell --to <역할> "<메시지>"    그 역할의 세션에 보낸다
+# 시각은 하네스가 보내는 순간의 시계로 붙인다. 메시지 안에 시각을 추측해 적지 않는다(ohmystock 2026-11-12: 결정 시각을
+# 추측해 "03:1x"로 적었지만 실제 전달은 10:14였다). 실행기 밖에서 연 세션에서도 쓸 수 있다(프로젝트는 이 파일 위치로 정한다).
+set -uo pipefail
+BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+to=orchestrator
+if [[ "${1:-}" == --to ]]; then [[ $# -ge 2 ]] || exit 2; to="$2"; shift 2; fi
+[[ $# -eq 1 && -n "$1" ]] || { sed -n '2,4p' "${BASH_SOURCE[0]}" | sed 's/^# *//' >&2; exit 2; }
+project="${HERDR_PROJECT:-}"
+if [[ -z "$project" ]]; then
+  common="$(git -C "$BIN" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || { echo "프로젝트를 정하지 못했다" >&2; exit 2; }
+  project="$(basename "$(dirname "$common")")"
+fi
+latest() { # 역할 → 그 역할의 살아 있는 세션 중 가장 최근에 띄운 것. hc ls는 시각을 주지 않아 hc get으로 본다
+  local a m best="" bm=-1
+  for a in $(hc ls --json --label "project=$project" --label "role=$1" 2>/dev/null | jq -r '.terminals[]?.address'); do
+    m="$(hc get "$a" --json 2>/dev/null | jq -r '.created_ms // 0' 2>/dev/null)"
+    [[ "${m:-0}" -gt "$bm" ]] && { best="$a"; bm="${m:-0}"; }
+  done
+  printf '%s' "$best"
+}
+target="$(latest "$to")"
+[[ -n "$target" ]] || { echo "$project의 $to 세션을 찾지 못했다. Orchestrator면 herdr-session으로 띄운다." >&2; exit 1; }
+from="${HERDR_ROLE:-commander}"
+hc send "$target" "$1 ($from $(date '+%Y-%m-%d %H:%M') 보냄)" >/dev/null || { echo "$target 에 보내지 못했다" >&2; exit 1; }
+echo "보냄: $to($target)"

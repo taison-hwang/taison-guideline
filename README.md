@@ -131,6 +131,9 @@ cd <프로젝트 경로>
 2. 그 안에서 codex(또는 claude)가 프로젝트 폴더를 작업 위치로 해서 뜬다.
 3. 새 폴더에서 처음 띄우면 폴더 신뢰 확인 창이 뜬다. codex는 `1. Trust and continue`, claude는 `Yes, I trust this folder`를 골라 한 번 승인한다. 이후 같은 폴더에 뜨는 세션은 묻지 않는다. codex는 이보다 먼저 업데이트 안내를 띄울 수 있다.
 4. 이 패널이 보기 패널의 기준이 되고, 패널 이름이 `commander`로 바뀐다.
+5. hc 밖에서 감시자(`herdr-watch`)가 함께 뜬다. 아래 "자리를 비웠을 때"를 본다.
+
+Commander는 반드시 이 명령으로 띄운다. 패널에서 그냥 연 claude·codex는 `role=commander` 라벨이 없어 Orchestrator의 보고가 닿지 않는다. 그래서 실행기는 Commander가 없으면 Orchestrator를 띄우지 않는다.
 
 ### 4. 목표 말하기
 
@@ -234,6 +237,27 @@ hc attach t3                                                       # 다시 붙�
 hc kill t3                                                         # 세션 끝내기
 ```
 
+### 자리를 비웠을 때: 알림, 감시자, 메모리
+
+자율주행은 사용자 결정이 필요할 때만 멈춘다. 그 요청이 사용자에게 닿지 않거나 세션이 한꺼번에 죽으면 사용자가 돌아올 때까지 멈춘 채로 있다(ohmystock 2026-11-11~12: 결정 요청이 Commander 없이 파일에만 쌓여 27시간, OOM으로 세션 214개가 한꺼번에 끝남). 하네스는 이렇게 막는다.
+
+| 장치 | 하는 일 | 설정 |
+| --- | --- | --- |
+| 알림(`herdr-notify`) | Orchestrator의 `[차단]`·`[완료]`와, Commander가 없을 때의 모든 보고를 herdr 화면 알림·데스크톱 알림·`HERDR_NOTIFY_CMD`(휴대폰 푸시 등)로 보낸다 | `HERDR_NOTIFY`, `HERDR_NOTIFY_CMD`, `HERDR_NOTIFY_TAGS` |
+| 전하지 못한 보고 | Commander가 없으면 `herdr-report`가 보고를 `~/.claude/herdr/handoff/<프로젝트>/pending-decisions.md`에 남긴다. Commander가 다시 뜨면 시작하자마자 그 파일을 사용자에게 전한다 | |
+| 감시자(`herdr-watch`) | hc 밖의 systemd 사용자 서비스다. Orchestrator가 `holder_lost`·SIGKILL로 끝나면 `재개`와 함께 다시 띄우고, Commander가 없으면 다시 알리고, 처리되지 않은 `[CLEAR 요청]`을 대신 실행한다. 세션도 할 일도 없이 6시간이 지나면 끝난다 | `HERDR_WATCH*`, `HERDR_CLEAR_TIMEOUT` |
+| 세션별 cgroup(`herdr-scope`) | 세션·무거운 검사·검증 서브에이전트가 각자 systemd scope에서 돈다. 메모리가 모자라면 가장 큰 것 하나만 끝나고 hc holder와 나머지는 남는다 | `HERDR_SESSION_MEM_MAX`, `HERDR_HEAVY_MEM_MAX` |
+| 시작 가드·디스크 가드 | 무거운 검사는 가용 메모리·부하가 기준을 넘을 때까지 기다린다. 디스크 여유가 모자라면 하네스 캐시를 지우고(`herdr-clean`), 그래도 모자라면 검사를 보류한다 | `HERDR_HEAVY_MIN_MEM_GB`, `HERDR_HEAVY_MAX_LOAD`, `HERDR_MIN_DISK_GB` |
+| 검증 도구 한도 | codex 쓴 비율이 기준 이상이면 대체 도구로 검증하고, 대체 도구가 없으면 횟수를 쓰지 않고 알린다 | `HERDR_VERIFIER_LIMIT_PCT`, `HERDR_VERIFIER_FALLBACK_*` |
+
+```bash
+.agents/bin/herdr-watch --status   # 감시자 상태와 최근 기록(~/.claude/herdr/handoff/<프로젝트>/watch.log)
+.agents/bin/herdr-watch --stop     # 감시자를 끈다(다음 Commander·Orchestrator 실행 때 다시 뜬다)
+.agents/bin/herdr-clean --dry-run  # 지울 하네스 캐시와 크기
+```
+
+systemd 사용자 관리자가 없는 환경(macOS 등)에서는 cgroup을 나누지 않고, 감시자는 `setsid`로 뜬다. 이때 감시자는 hc holder와 함께 끝날 수 있다.
+
 ## 갱신
 
 ```bash
@@ -260,6 +284,10 @@ bin/harness sync <프로젝트>
 | 패널을 닫았더니 Commander가 사라진 것 같다                                 | 세션은 hc 터미널에 남아 있다. `hc ls --label "project=<프로젝트 폴더 이름>"`로 찾아 `hc attach`로 붙는다                                                                                                               |
 | `도구를 정하지 못했다`                                                   | 도구 인자가 없고 `.agents/harness.env`의 `HERDR_<역할>_TOOL`도 비어 있다. 값을 채우거나 인자로 `codex`·`claude`를 준다. 예전 `harness.env`에 이 줄이 없으면 `harness sync`가 끝에 빈 칸으로 붙인다                                  |
 | codex가 띄운 명령이 hc 밖에서 돈다                                         | 실행기가 codex에 `--no-daemon`을 붙인다. 예전 실행기면 `bin/harness sync`로 갱신한다                                                                                                                                   |
+| `거부: <프로젝트>에 Commander(role=commander 라벨)가 없다` | Orchestrator를 띄우려는 세션이 실행기 밖에서 연 Commander다. herdr 패널에서 `.agents/bin/herdr-session --here commander`로 Commander를 다시 띄운다 |
+| 결정 요청이 사용자에게 오지 않는다 | `~/.claude/herdr/handoff/<프로젝트>/pending-decisions.md`와 `notify.log`를 본다. 알림 경로가 `없음`이면 `notify-send`·herdr가 없거나 `HERDR_NOTIFY=0`이다. 휴대폰으로 받으려면 `HERDR_NOTIFY_CMD`를 정한다 |
+| `[판정] … ERROR` | 검증 도구가 판정 없이 끝났다(도구 거절, 즉시 종료, 시간 초과). 검증 횟수에 세지 않는다. 기록의 stderr로 원인을 본다 |
+| 세션이 한꺼번에 끝났다(`holder_lost`) | hc holder가 죽었다. 감시자가 Orchestrator를 다시 띄우므로 `watch.log`를 본다. `journalctl --user`에서 `oomd` 기록으로 OOM인지 확인하고 `HERDR_HEAVY_*` 가드를 조인다 |
 
 ## 구조
 
@@ -273,7 +301,14 @@ core/                 프로젝트에 복사되는 원본
   bin/herdr-check     검사 실행기(가벼운·무거운 단계, 빠른 파일 검사, SHA별 결과 기록)
   bin/herdr-usage     토큰 사용량 집계(세션 장부·보고 경계 + transcript)
   bin/herdr-flow      작업 흐름과 대기 측정(받은 지시·보고·검사 기록)
-  bin/herdr-queue     무거운 검사의 공용 대기열(자리·급함·시작 가드)
+  bin/herdr-queue     무거운 검사의 공용 대기열(자리·급함·시작 가드·메모리 상한)
+  bin/herdr-verify    독립 검증 서브에이전트(패치별 판정, 도구 한도와 대체 도구)
+  bin/herdr-scope     명령을 자기 systemd scope(cgroup)에서 돌린다
+  bin/herdr-watch     hc 밖 감시자(Orchestrator 재기동, Commander 부재 알림, CLEAR 대행)
+  bin/herdr-notify    사용자 알림(herdr 화면, 데스크톱, HERDR_NOTIFY_CMD)
+  bin/herdr-tell      Commander → Orchestrator 메시지(보낸 시각을 붙인다)
+  bin/herdr-clear     세션 정리(/clear) 뒤 다음 메시지
+  bin/herdr-clean     하네스 캐시 정리(쓰지 않는 검사·검증 worktree, 오래된 로그)
   hooks/              역할 주입·compact 복구, 소프트 신호, compact 직전 스냅샷, 보고 누락 방지, 편집 직후 검사
   config/             Claude·Codex hook 설정, 사용량 단가표
 templates/            init 때 한 번만 넣는 파일

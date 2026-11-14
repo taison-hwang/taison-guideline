@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# 사용자에게 알린다. 세션 화면 밖에서 사용자가 볼 수 있는 경로로 보낸다. 실행기가 PATH에 넣으므로 어느 폴더에서나 쓴다.
+#   herdr-notify "<제목>" "<본문>"
+# 경로: herdr 화면 알림(herdr notification show), 데스크톱 알림(notify-send), HERDR_NOTIFY_CMD(휴대폰 푸시 등).
+# HERDR_NOTIFY_CMD는 bash -c로 돌고 HERDR_NOTIFY_TITLE·HERDR_NOTIFY_BODY 환경 변수로 내용을 받는다.
+#   예: HERDR_NOTIFY_CMD='curl -s -d "$HERDR_NOTIFY_BODY" -H "Title: $HERDR_NOTIFY_TITLE" ntfy.sh/<내 토픽>'
+# HERDR_NOTIFY=0이면 보내지 않고 기록만 남긴다. 어느 경로가 실패해도 끝 코드는 0이다(알림이 일을 막지 않는다).
+# 기록: ~/.claude/herdr/handoff/<프로젝트>/notify.log
+set -uo pipefail
+[[ $# -ge 1 ]] || { sed -n '2,3p' "${BASH_SOURCE[0]}" | sed 's/^# *//' >&2; exit 2; }
+BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+title="$1" body="${2:-}"
+# 환경 변수 HERDR_NOTIFY가 있으면 harness.env보다 앞선다(시험·일시 끄기)
+env_notify="${HERDR_NOTIFY:-}"
+HERDR_NOTIFY=1 HERDR_NOTIFY_CMD=""
+# shellcheck disable=SC1091
+[[ -f "$BIN/../harness.env" ]] && . "$BIN/../harness.env" >/dev/null 2>&1
+[[ -n "$env_notify" ]] && HERDR_NOTIFY="$env_notify"
+project="${HERDR_PROJECT:-}"
+if [[ -z "$project" ]]; then
+  common="$(git -C "$BIN" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" && project="$(basename "$(dirname "$common")")"
+fi
+dir="$HOME/.claude/herdr/handoff/${project:-_}"
+mkdir -p "$dir" 2>/dev/null
+# 너무 길면 자르고, 잘못된 UTF-8은 버린다(hc·herdr는 잘못된 UTF-8 인자를 거부한다)
+clean() { if command -v iconv >/dev/null; then iconv -f UTF-8 -t UTF-8 -c 2>/dev/null; else cat; fi; }
+title="$(printf '[%s] %s' "${project:-herdr}" "$title" | head -c 200 | clean)"
+body="$(printf '%s' "$body" | head -c 1000 | clean)"
+sent=()
+if [[ "$HERDR_NOTIFY" == 1 ]]; then
+  if command -v herdr >/dev/null && herdr notification show "$title" --body "$body" --sound request >/dev/null 2>&1; then sent+=(herdr); fi
+  if command -v notify-send >/dev/null && notify-send -u critical -a herdr "$title" "$body" >/dev/null 2>&1; then sent+=(desktop); fi
+  if [[ -n "$HERDR_NOTIFY_CMD" ]]; then
+    limit=(); command -v timeout >/dev/null && limit=(timeout 20)
+    HERDR_NOTIFY_TITLE="$title" HERDR_NOTIFY_BODY="$body" "${limit[@]}" bash -c "$HERDR_NOTIFY_CMD" >/dev/null 2>&1 && sent+=(cmd)
+  fi
+fi
+printf '%s\t%s\t%s\t%s\n' "$(date +%Y-%m-%dT%H:%M:%S%z)" "${sent[*]:-없음}" "$title" "${body//$'\n'/ }" >>"$dir/notify.log" 2>/dev/null
+echo "알림: ${sent[*]:-보낼 경로 없음(기록만)}"
+exit 0

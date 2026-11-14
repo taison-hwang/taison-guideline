@@ -9,7 +9,12 @@
 # (codex exec | claude -p)을 그 SHA에 고정한 검증 전용 worktree에서 띄운다. 작성자의 worktree, 설명, 맥락은 넘기지 않는다.
 # 넘기는 것: [배정] 원문(worker-turn hook이 저장), 기본 브랜치와 갈라진 곳..SHA의 범위, 같은 작업의 앞 판정 기록.
 # 판정은 패치(git patch-id)에 묶인다. rebase로 SHA만 바뀌고 패치가 같으면 그 판정을 그대로 쓴다.
-# 기록: <handoff>/verify/<작업>-<SHA12>-<n>.md, verdicts.tsv. 끝 코드: 0 PASS, 1 ISSUES, 4 BLOCKED, 5 검증 횟수 초과, 2 사용법·준비 실패
+# 기록: <handoff>/verify/<작업>-<SHA12>-<n>.md, verdicts.tsv. 끝 코드: 0 PASS, 1 ISSUES, 4 BLOCKED, 5 검증 횟수 초과, 2 사용법·준비 실패,
+#   6 ERROR(검증 도구가 판정 줄 없이 끝남: 도구 거절·즉시 종료·시간 초과. 하네스·도구 원인이라 횟수에 세지 않는다),
+#   7 띄우지 않음(도구 한도 부족에 대체 도구 없음, 또는 ERROR가 HERDR_VERIFY_MAX_ERRORS번 쌓임)
+# 한도: codex는 rollout의 rate_limits로 남은 양을 보고, 쓴 비율이 HERDR_VERIFIER_LIMIT_PCT 이상이면
+#   HERDR_VERIFIER_FALLBACK_TOOL·MODEL·EFFORT로 바꾼다. 대체 도구가 없으면 띄우지 않고 끝 코드 7로 알린다.
+# 검증 세션은 자기 systemd scope에서 돈다(herdr-scope, 메모리 상한 HERDR_HEAVY_MEM_MAX).
 set -uo pipefail
 BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 usage() { sed -n '2,7p' "${BASH_SOURCE[0]}" | sed 's/^# *//' >&2; exit 2; }
@@ -43,8 +48,8 @@ base="$(git merge-base "$sha" "$(git -C "$main" rev-parse HEAD)")" || { echo "�
 patch="$(git diff "$base" "$sha" | git patch-id --stable | cut -d' ' -f1)"
 [[ -n "$patch" ]] || patch=empty
 
-verdict_of() { # 같은 작업·같은 패치의 마지막 판정
-  awk -F'\t' -v t="$task" -v p="$patch" 'NR > 1 && $4 == t && $7 == p { r = $8 " " $6 " " $9 } END { if (r) print r; else print "NONE" }' "$tsv" 2>/dev/null || echo NONE
+verdict_of() { # 같은 작업·같은 패치의 마지막 판정. ERROR(도구 오류)는 판정이 아니므로 건너뛴다
+  awk -F'\t' -v t="$task" -v p="$patch" 'NR > 1 && $4 == t && $7 == p && $8 != "ERROR" { r = $8 " " $6 " " $9 } END { if (r) print r; else print "NONE" }' "$tsv" 2>/dev/null || echo NONE
 }
 
 if [[ $mode == status ]]; then verdict_of; exit 0; fi
@@ -66,7 +71,9 @@ notify() { # 결과 기록. 뒤에서 돌 때는 이 세션에 [판정]을 보�
 
 HERDR_WORKER_TOOL="" HERDR_WORKER_MODEL="" HERDR_WORKER_EFFORT=""
 HERDR_VERIFIER_TOOL="" HERDR_VERIFIER_MODEL="" HERDR_VERIFIER_EFFORT=""
-HERDR_VERIFY_TIMEOUT=3600 HERDR_VERIFY_MAX_ROUNDS=3 HERDR_AUTONOMOUS=1
+HERDR_VERIFY_TIMEOUT=3600 HERDR_VERIFY_MAX_ROUNDS=3 HERDR_VERIFY_MAX_ERRORS=2 HERDR_AUTONOMOUS=1
+HERDR_VERIFIER_LIMIT_PCT=95 HERDR_VERIFIER_FALLBACK_TOOL="" HERDR_VERIFIER_FALLBACK_MODEL="" HERDR_VERIFIER_FALLBACK_EFFORT=""
+HERDR_HEAVY_MEM_MAX=50%
 # shellcheck disable=SC1091
 [[ -f "$BIN/../harness.env" ]] && . "$BIN/../harness.env"
 
@@ -78,10 +85,15 @@ fi
 
 # 횟수: 이 작업의 마지막 [배정] 뒤로 센다. 같은 지적을 두고 고치고 다시 받기를 끝없이 돌지 않게 한다
 since="$(awk -F'\t' -v t="$task" '$5 == "배정" && $6 == t { e = $1 } END { print e + 0 }' "$dir/received.tsv" 2>/dev/null)"
-rounds="$(awk -F'\t' -v t="$task" -v s="${since:-0}" 'NR > 1 && $4 == t && $1 + 0 >= s + 0 { n++ } END { print n + 0 }' "$tsv" 2>/dev/null)"
+rounds="$(awk -F'\t' -v t="$task" -v s="${since:-0}" 'NR > 1 && $4 == t && $1 + 0 >= s + 0 && $8 != "ERROR" { n++ } END { print n + 0 }' "$tsv" 2>/dev/null)"
+errors="$(awk -F'\t' -v t="$task" -v s="${since:-0}" 'NR > 1 && $4 == t && $1 + 0 >= s + 0 && $8 == "ERROR" { n++ } END { print n + 0 }' "$tsv" 2>/dev/null)"
 if [[ "${rounds:-0}" -ge "$HERDR_VERIFY_MAX_ROUNDS" ]]; then
   notify "[판정] $task 검증 횟수 초과(${rounds}/${HERDR_VERIFY_MAX_ROUNDS}) ${sha:0:12} — 더 검증하지 않는다. 남은 지적과 반박 근거를 적어 herdr-report \"[차단] $task …\"로 Orchestrator에 올린다."
   exit 5
+fi
+if [[ "${errors:-0}" -ge "$HERDR_VERIFY_MAX_ERRORS" && -z "$focus" ]]; then
+  notify "[판정] $task 검증 도구 오류 반복(${errors}번) ${sha:0:12} — 도구가 판정 없이 끝났다(기록: verdicts.tsv의 ERROR 줄). 원인을 풀었으면 herdr-verify --focus \"<푼 내용>\"로 다시, 아니면 herdr-report \"[차단] $task …\"로 올린다."
+  exit 7
 fi
 
 # 도구·모델·effort: 검증 설정, 비면 워커 설정(effort는 high). 설정 모델은 도구가 같을 때만 쓴다
@@ -98,6 +110,41 @@ case "$tool" in
 esac
 effort="${effort:-high}"
 
+codex_used_pct() { # codex 최근 rollout의 rate_limits에서 아직 재설정되지 않은 창의 쓴 비율 중 큰 값(정수). 모르면 빈 값
+  local f
+  f="$(ls -t "${CODEX_HOME:-$HOME/.codex}"/sessions/*/*/*/rollout-*.jsonl 2>/dev/null | head -n 1)"
+  [[ -n "$f" ]] || return 0
+  grep -o '"rate_limits":{.*' "$f" 2>/dev/null | tail -n 1 | python3 -c '
+import json, re, sys, time
+line = sys.stdin.read()
+try:
+    obj, _ = json.JSONDecoder().raw_decode(line[len("\"rate_limits\":"):])
+except ValueError:
+    sys.exit(0)
+now, used = time.time(), []
+for k in ("primary", "secondary"):
+    w = obj.get(k) or {}
+    if w.get("used_percent") is not None and (w.get("resets_at") or now + 1) > now:
+        used.append((w["used_percent"], w.get("resets_at")))
+if used:
+    pct, at = max(used)
+    print(int(pct), time.strftime("%m-%d %H:%M", time.localtime(at)) if at else "?")
+' 2>/dev/null
+}
+if [[ "$tool" == codex ]]; then
+  read -r used resets <<<"$(codex_used_pct)"
+  if [[ -n "${used:-}" && "$used" -ge "$HERDR_VERIFIER_LIMIT_PCT" ]]; then
+    if [[ -n "$HERDR_VERIFIER_FALLBACK_TOOL" && "$HERDR_VERIFIER_FALLBACK_TOOL" != codex ]]; then
+      echo "codex 한도 ${used}%(재설정 $resets) ≥ ${HERDR_VERIFIER_LIMIT_PCT}% — 대체 도구 $HERDR_VERIFIER_FALLBACK_TOOL로 검증한다" >&2
+      tool="$HERDR_VERIFIER_FALLBACK_TOOL" model="$HERDR_VERIFIER_FALLBACK_MODEL" effort="${HERDR_VERIFIER_FALLBACK_EFFORT:-high}"
+      [[ "$tool" == claude ]] && model="${model:-opus}"
+    else
+      notify "[판정] $task 검증 보류 ${sha:0:12} — codex 한도 ${used}%(재설정 $resets)라 검증을 띄우지 않았다(횟수에 세지 않음). harness.env의 HERDR_VERIFIER_FALLBACK_TOOL로 대체 도구를 정하면 바로 쓸 수 있다. 그 결정은 사용자 몫이므로 herdr-report \"[차단] $task 검증 도구 한도 …\"로 올린다."
+      exit 7
+    fi
+  fi
+fi
+
 # [배정] 원문. 작성자의 worktree 경로는 지운다(검증자가 그곳에서 실행하지 않게)
 assign="$dir/assign/$HERDR_ROLE/$safe.txt"
 [[ -n "$criteria" ]] && assign="$criteria"
@@ -106,10 +153,11 @@ top="$(git rev-parse --show-toplevel)"
 spec="$(awk -v p="$top" '{ while ((i = index($0, p)) > 0) $0 = substr($0, 1, i - 1) "<작성자 worktree: 쓰지 않는다>" substr($0, i + length(p)); print }' "$assign")"
 
 # 같은 작업의 앞 판정(다른 패치). 있으면 지적한 항목과 고친 부분만 다시 본다
-last="$(awk -F'\t' -v t="$task" 'NR > 1 && $4 == t { r = $8 "\t" $6 "\t" $9 } END { print r }' "$tsv" 2>/dev/null)"
+last="$(awk -F'\t' -v t="$task" 'NR > 1 && $4 == t && $8 != "ERROR" { r = $8 "\t" $6 "\t" $9 } END { print r }' "$tsv" 2>/dev/null)"
 
 n=$((rounds + 1))
 record="$dir/verify/$safe-${sha:0:12}-$n.md"
+[[ -e "$record" ]] && record="${record%.md}-$(date +%s).md" # 앞 시도가 ERROR였으면 같은 번호가 남아 있다
 wt="${XDG_CACHE_HOME:-$HOME/.cache}/herdr/verify/$HERDR_PROJECT/$HERDR_ROLE-$safe"
 mkdir -p "$(dirname "$wt")"
 exec 9>"$wt.lock"
@@ -120,6 +168,10 @@ git worktree add -q --detach "$wt" "$sha" || { echo "검증용 worktree를 만�
 cleanup() { git worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"; git worktree prune 2>/dev/null; }
 trap cleanup EXIT
 out_file="$wt/.herdr-verdict.md" last_msg="$wt/.herdr-last-message.md"
+
+utf8_clean() { # 잘못된 UTF-8 바이트를 버린다
+  if command -v iconv >/dev/null; then iconv -f UTF-8 -t UTF-8 -c 2>/dev/null; else python3 -c 'import sys; sys.stdout.write(sys.stdin.buffer.read().decode("utf-8", "ignore"))'; fi
+}
 
 prompt="$(
   cat <<EOF
@@ -140,8 +192,9 @@ EOF
     echo
     echo "[다시 검증] 같은 작업의 앞 판정은 $lr(${ls:0:12})이고 기록은 아래에 있다. 이번에는 그 차단 지적이 고쳐졌는지와, 고친 부분이 새 문제를 만들지 않았는지만 본다."
     if git merge-base --is-ancestor "$ls" "$sha" 2>/dev/null; then echo "고친 부분: git diff ${ls} ${sha}"; else echo "앞 판정의 커밋이 이 커밋의 조상이 아니다(rebase). 전체 범위에서 지적 항목을 다시 본다."; fi
-    echo "--- 앞 판정 기록($lp)"
-    head -c 12000 "$lp" 2>/dev/null
+    echo "--- 앞 판정 기록($lp). 아래는 앞부분이다. 더 필요하면 그 파일을 직접 읽는다"
+    # 바이트로 자르면 한글 중간이 끊겨 도구가 프롬프트를 거절한다(ohmystock 2026-11-12, 3회). 깨진 끝 글자를 버린다
+    head -c 8000 "$lp" 2>/dev/null | utf8_clean
   fi
   if [[ -n "$focus" ]]; then
     echo
@@ -152,6 +205,7 @@ EOF
   echo "--- [배정] 원문"
   printf '%s\n' "$spec"
 )"
+prompt="$(printf '%s' "$prompt" | utf8_clean)"
 
 # 검증 세션이 이 세션의 hook(보고 강제, 받은 지시 기록)을 타지 않게 역할을 지운다. 바깥 Claude 세션의 표지도 지운다
 UNSETS=(-u HERDR_ROLE -u HC_TERMINAL_ID -u HERDR_VERIFY_NOTIFY)
@@ -173,7 +227,9 @@ printf '%s\n' "$prompt" >"$wt/.herdr-prompt.md"
 # 검증 세션을 이 프로세스의 자식으로 바로 띄운다(exec). 이 실행기가 TERM을 받으면(검사 FAIL로 취소) 그 세션도 끝낸다
 apid=""
 trap '[[ -n "$apid" ]] && { kill -TERM "$apid" 2>/dev/null; wait "$apid" 2>/dev/null; }; echo "독립 검증을 취소했다"; exit 143' TERM INT
-(cd "$wt" && exec env "${UNSETS[@]}" ENABLE_CLAUDEAI_MCP_SERVERS=false HERDR_VERIFY_RECORD="$out_file" \
+# 검증 세션은 자기 scope(cgroup)에서 메모리 상한을 두고 돈다. OOM이 나도 이 검증만 끝난다
+(cd "$wt" && exec "$BIN/herdr-scope" "$HERDR_PROJECT-$HERDR_ROLE-verify" "$HERDR_HEAVY_MEM_MAX" -- \
+  env "${UNSETS[@]}" ENABLE_CLAUDEAI_MCP_SERVERS=false HERDR_VERIFY_RECORD="$out_file" \
   "${TIMEOUT[@]}" "${AGENT[@]}" <"$wt/.herdr-prompt.md" >"$wt/.herdr-stdout" 2>"$wt/.herdr-stderr") &
 apid=$!
 wait "$apid"
@@ -188,8 +244,9 @@ else cp "$wt/.herdr-stdout" "$record" 2>/dev/null || : >"$record"
 fi
 result="$(grep -m1 -oE '판정:[[:space:]]*(PASS|ISSUES|BLOCKED)' "$record" | grep -oE 'PASS|ISSUES|BLOCKED')"
 if [[ -z "$result" ]]; then
-  result=BLOCKED
-  { echo "판정: BLOCKED"; echo; echo "검증 세션이 판정 줄을 남기지 않았다(끝 코드 $rc, ${secs}초, 124면 시간 제한 HERDR_VERIFY_TIMEOUT=${HERDR_VERIFY_TIMEOUT})."
+  # 판정 줄 없이 끝났다: 도구 거절, 즉시 종료, 시간 초과. 검증자의 판단이 아니므로 ERROR로 적고 횟수에 세지 않는다
+  result=ERROR
+  { echo "판정 없음(ERROR, 검증 횟수에 세지 않음)"; echo; echo "검증 세션이 판정 줄을 남기지 않았다(끝 코드 $rc, ${secs}초, 124면 시간 제한 HERDR_VERIFY_TIMEOUT=${HERDR_VERIFY_TIMEOUT})."
     echo "--- stderr 끝부분"; tail -n 30 "$wt/.herdr-stderr" 2>/dev/null; echo "--- 남긴 내용"; cat "$record"; } >"$record.tmp" && mv "$record.tmp" "$record"
 fi
 [[ -s "$tsv" ]] || printf 'epoch\ttime\trole\ttask\tbase\tsha\tpatch\tresult\trecord\ttool\tmodel\teffort\tseconds\n' >"$tsv"
@@ -199,5 +256,6 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$(d
 case "$result" in
   PASS) notify "[판정] $task PASS ${sha:0:12} $record — herdr-report \"[완료] $task …\"로 보낸다(판정이 자동으로 붙는다)."; exit 0 ;;
   ISSUES) notify "[판정] $task ISSUES ${sha:0:12} $record — 기록의 차단 지적을 고쳐 커밋하고 다시 보낸다(지적 항목만 다시 본다). 지적이 틀렸다고 보면 근거 명령과 출력을 herdr-verify --focus로 넘긴다. 남은 횟수 $((HERDR_VERIFY_MAX_ROUNDS - n))번."; exit 1 ;;
+  ERROR) notify "[판정] $task ERROR ${sha:0:12} $record — 검증 도구가 판정 없이 끝났다(끝 코드 $rc, ${secs}초). 하네스·도구 원인이라 횟수에 세지 않는다. 기록의 stderr로 원인을 보고, 풀었으면 다시 보낸다(오류 $((errors + 1))/${HERDR_VERIFY_MAX_ERRORS})."; exit 6 ;;
   *) notify "[판정] $task BLOCKED ${sha:0:12} $record — 검증을 실행하지 못했다. 기록의 이유를 풀 수 있으면 풀고 다시, 아니면 herdr-report \"[차단] $task …\"로 올린다."; exit 4 ;;
 esac
