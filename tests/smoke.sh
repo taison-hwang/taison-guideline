@@ -65,7 +65,12 @@ check "장부에 다음 예약 칸" "grep -q '| 다음 예약 |' '$O_REF'"
 check "첫 완료만으로 정리하지 않음" "grep -q '첫 \`\[완료\]\`만으로는 정리하지 않는다' '$C_REF'"
 check "CLEAR 요청의 두 경로" "grep -q '소프트 신호에 따른 자기 정리 요청' '$P/.agents/skills/running-herdr-autopilot/SKILL.md'"
 check "검증 세션은 띄우지 않음" "! '$P/.agents/bin/herdr-session' --dry-run verifier-1 codex >/dev/null 2>&1 && { '$P/.agents/bin/herdr-session' --dry-run verifier-1 codex 2>&1 || true; } | grep -q 'herdr-verify'"
-check "Commander 기본값은 claude sonnet medium" "grep -qx 'HERDR_COMMANDER_TOOL=claude' '$P/.agents/harness.env' && '$P/.agents/bin/herdr-session' --dry-run commander | grep -q 'claude .*--model sonnet --effort medium'"
+check "Commander 기본값은 codex gpt-6.1-sol high" "grep -qx 'HERDR_COMMANDER_TOOL=codex' '$P/.agents/harness.env' && '$P/.agents/bin/herdr-session' --dry-run commander | grep -q 'codex .*-m gpt-6.1-sol .*effort=\"high\"'"
+check "Orchestrator 기본값은 claude fable high" "'$P/.agents/bin/herdr-session' --dry-run --no-commander orchestrator | grep -q 'claude .*--model fable --effort high'"
+check "워커 기본값은 claude opus medium" "'$P/.agents/bin/herdr-session' --dry-run worker-1 | grep -q 'claude .*--model opus --effort medium'"
+check "검증 기본값은 codex gpt-6.2-astra high, 대체는 claude fable high" "grep -qx 'HERDR_VERIFIER_TOOL=codex' '$P/.agents/harness.env' && grep -qx 'HERDR_VERIFIER_MODEL=gpt-6.2-astra' '$P/.agents/harness.env' && grep -qx 'HERDR_VERIFIER_EFFORT=high' '$P/.agents/harness.env' && grep -qx 'HERDR_VERIFIER_FALLBACK_TOOL=claude' '$P/.agents/harness.env' && grep -qx 'HERDR_VERIFIER_FALLBACK_MODEL=fable' '$P/.agents/harness.env' && grep -qx 'HERDR_VERIFIER_FALLBACK_EFFORT=high' '$P/.agents/harness.env'"
+# 아래 시험은 역할 설정이 빈 상태에서 시작한다
+set_env 's/^\(HERDR_[A-Z_]*_TOOL\)=.*/\1=/; s/^\(HERDR_[A-Z_]*_MODEL\)=.*/\1=/; s/^\(HERDR_[A-Z_]*_EFFORT\)=.*/\1=/' "$P/.agents/harness.env"
 check "worktree ignore" "grep -qxF '/docs/.worktrees/' '$P/.gitignore'"
 check "graft 파일 ignore" "grep -qxF /graft/ '$P/.gitignore' && grep -qxF /.ignore '$P/.gitignore'"
 check "설정 JSON" "jq -e .hooks.PreCompact '$P/.claude/settings.json' >/dev/null && jq -e .hooks.SessionStart '$P/.codex/hooks.json' >/dev/null"
@@ -661,8 +666,28 @@ out="$(CODEX_HOME="$V/codexhome" "$VF" --criteria "$V/crit.txt" V-09 2>&1)"; rc=
 check "codex 한도가 기준 이상이고 대체 도구가 없으면 띄우지 않고 [차단] 안내" "[ $rc -eq 7 ] && printf '%s' \"\$out\" | grep -q 'codex 한도 98%' && [ \"\$(wc -l <'$V/agent.log')\" -eq $n0 ] && [ \"\$('$VF' --status V-09)\" = NONE ]"
 set_env 's/^HERDR_VERIFIER_FALLBACK_TOOL=.*/HERDR_VERIFIER_FALLBACK_TOOL=claude/' "$P/.agents/harness.env"
 CODEX_HOME="$V/codexhome" "$VF" --criteria "$V/crit.txt" V-09 >/dev/null 2>&1; rc=$?
-check "대체 도구가 있으면 그 도구로 검증" "[ $rc -eq 0 ] && tail -n 1 '$V/agent.log' | grep -q -- '^-p .*--model opus --effort high'"
+check "대체 도구가 있으면 그 도구로 검증(모델 기본 fable)" "[ $rc -eq 0 ] && tail -n 1 '$V/agent.log' | grep -q -- '^-p .*--model fable --effort high'"
+# codex가 판정 없이 곧바로 끝나면(로그인·모델 거절 등) 대체 도구로 한 번 더 돌리고, ERROR로 세지 않는다
+cat >"$V/bin/codex-fail" <<'AGENT'
+#!/usr/bin/env bash
+case "$(basename "$0")" in codex) echo "codex: not logged in" >&2; exit 1 ;; esac
+exec "$(dirname "$0")/codex-real" "$@"
+AGENT
+chmod +x "$V/bin/codex-fail"; mv "$V/bin/codex" "$V/bin/codex-real"; rm "$V/bin/claude"; ln -s codex-real "$V/bin/claude"; cp "$V/bin/codex-fail" "$V/bin/codex"
+echo PASS >"$V/verdict.next"; echo k >k.txt; vcommit k
+"$VF" --criteria "$V/crit.txt" V-10 >/dev/null 2>&1; rc=$?
+rec="$(awk -F'\t' '$4 == "V-10" { r = $9 } END { print r }' "$D/verdicts.tsv")"
+check "codex가 판정 없이 끝나면 대체 도구로 다시 돌려 판정" "[ $rc -eq 0 ] && tail -n 1 '$V/agent.log' | grep -q -- '^-p .*--model fable' && [ \"\$(awk -F'\t' '\$4==\"V-10\"' '$D/verdicts.tsv' | cut -f8,10 | tr '\t' ' ')\" = 'PASS claude' ] && grep -q 'codex: not logged in' '$rec'"
+rm "$V/bin/codex"
+nocodex="$(printf '%s' "$PATH" | tr ':' '\n' | while IFS= read -r d; do [ -n "$d" ] && [ ! -x "$d/codex" ] && printf '%s:' "$d"; done)" # 실제 codex도 가린다
+echo PASS >"$V/verdict.next"; echo l >l.txt; vcommit l
+PATH="$nocodex" "$VF" --criteria "$V/crit.txt" V-11 >/dev/null 2>&1; rc=$?
+check "codex 명령이 없으면 대체 도구로 검증" "[ $rc -eq 0 ] && awk -F'\t' '\$4==\"V-11\" && \$8==\"PASS\" && \$10==\"claude\"' '$D/verdicts.tsv' | grep -q ."
 set_env 's/^HERDR_VERIFIER_FALLBACK_TOOL=.*/HERDR_VERIFIER_FALLBACK_TOOL=/' "$P/.agents/harness.env"
+echo m >m2.txt; vcommit m2
+out="$(PATH="$nocodex" "$VF" --criteria "$V/crit.txt" V-12 2>&1)"; rc=$?
+check "codex 명령이 없고 대체 도구도 없으면 띄우지 않음" "[ $rc -eq 7 ] && printf '%s' \"\$out\" | grep -q 'codex 명령을 찾지 못해'"
+rm "$V/bin/claude"; mv "$V/bin/codex-real" "$V/bin/codex"; ln -s codex "$V/bin/claude"; rm "$V/bin/codex-fail"
 # 디스크 가드: 여유가 모자라면 캐시를 정리하고, 그래도 모자라면 검사를 보류(끝 코드 5)
 mkdir -p "$WORK/cache/herdr/check/demo/worker-old" "$WORK/cache/herdr/check/demo/worker-busy"; : >"$WORK/cache/herdr/check/demo/worker-busy.lock"
 exec 8>"$WORK/cache/herdr/check/demo/worker-busy.lock"; flock 8

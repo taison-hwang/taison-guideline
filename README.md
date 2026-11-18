@@ -84,18 +84,22 @@ HERDR_LIGHT_DENY_PATHS="migrations/* */auth/*"                     # 바꾸면 �
 Commander, Orchestrator, 워커, 독립 검증 서브에이전트가 쓸 에이전트(codex | claude)와 모델·effort를 `.agents/harness.env`에 정한다. Commander와 Orchestrator는 세션을 띄울 때 도구를 적지 않고 이 값을 따른다. 정하지 않으면 띄우는 세션이 자기와 같은 에이전트를 고르기 쉽다.
 
 ```bash
-HERDR_COMMANDER_TOOL=claude         # --here commander 에서 도구를 생략하면 쓴다(템플릿 기본: claude sonnet medium)
-HERDR_COMMANDER_MODEL=sonnet
-HERDR_COMMANDER_EFFORT=medium
+# 템플릿 기본값
+HERDR_COMMANDER_TOOL=codex          # --here commander 에서 도구를 생략하면 쓴다
+HERDR_COMMANDER_MODEL=gpt-6.1-sol
+HERDR_COMMANDER_EFFORT=high
 HERDR_ORCHESTRATOR_TOOL=claude
-HERDR_ORCHESTRATOR_MODEL=opus       # 비우면 실행기 기본 표
+HERDR_ORCHESTRATOR_MODEL=fable      # claude 별칭은 그 계열의 최신 버전(지금 Fable 5.2). 비우면 실행기 기본 표
 HERDR_ORCHESTRATOR_EFFORT=high
-HERDR_WORKER_TOOL=codex
-HERDR_WORKER_MODEL=gpt-6.1-sol
-HERDR_WORKER_EFFORT=high
-HERDR_VERIFIER_TOOL=claude          # 독립 검증 서브에이전트(herdr-verify). 작성자와 다른 도구를 권한다
-HERDR_VERIFIER_MODEL=opus
+HERDR_WORKER_TOOL=claude
+HERDR_WORKER_MODEL=opus             # 지금 Opus 5.5
+HERDR_WORKER_EFFORT=medium
+HERDR_VERIFIER_TOOL=codex           # 독립 검증 서브에이전트(herdr-verify). 작성자와 다른 도구를 권한다
+HERDR_VERIFIER_MODEL=gpt-6.2-astra
 HERDR_VERIFIER_EFFORT=high
+HERDR_VERIFIER_FALLBACK_TOOL=claude # codex를 쓰지 못할 때(한도, 미설치, 판정 없이 곧바로 끝남)
+HERDR_VERIFIER_FALLBACK_MODEL=fable
+HERDR_VERIFIER_FALLBACK_EFFORT=high
 HERDR_VERIFY_TIMEOUT=3600           # 검증 한 번의 시간 제한(초). 넘기면 BLOCKED
 HERDR_VERIFY_MAX_ROUNDS=3           # [배정]마다 같은 작업을 검증할 수 있는 횟수
 HERDR_MAX_WORKERS=3                 # 워커 수 상한
@@ -112,7 +116,8 @@ HERDR_MAX_WORKERS=3                 # 워커 수 상한
 - 세션 역할은 `COMMANDER`, `ORCHESTRATOR`, `WORKER`다. 검증 세션(`verifier-*`)은 띄우지 않는다(실행기가 거부한다). `VERIFIER` 설정은 워커가 띄우는 독립 검증 서브에이전트가 쓴다. `HERDR_VERIFIER_TOOL`이 비어 있으면 워커 설정(effort는 high)을 쓴다.
 - 검증 서브에이전트는 작성자의 맥락에 묶이지 않게 워커와 다른 도구, 상위 모델과 high effort로 두기를 권한다.
 - `*_MODEL`·`*_EFFORT`는 실제 도구가 `*_TOOL`과 같을 때만 쓴다. 다른 도구를 인자로 주면 그 도구의 기본 표를 쓴다(codex 모델 이름이 claude에 넘어가지 않게).
-- 기본 표: codex는 Commander·Orchestrator `gpt-6.1-terra`/medium, 워커 `gpt-6.1-sol`/high, 검증 `gpt-6.1-sol`/high. claude는 Commander `sonnet`/medium, Orchestrator `opus`/high, 워커 `opus`/medium, 검증 `opus`/high.
+- 검증 도구가 codex인데 쓰지 못하면 `HERDR_VERIFIER_FALLBACK_*`로 바꾼다: 한도가 `HERDR_VERIFIER_LIMIT_PCT` 이상일 때, codex 명령이 없을 때, codex가 판정 없이 곧바로 끝났을 때(로그인·모델 거절 등, 시간 초과는 제외). 마지막 경우는 같은 검증을 대체 도구로 한 번 더 돌리고 codex의 실패는 기록에만 남긴다.
+- 기본 표: codex는 Commander `gpt-6.1-sol`/high, Orchestrator `gpt-6.1-terra`/medium, 워커 `gpt-6.1-sol`/high, 검증 `gpt-6.2-astra`/high. claude는 Commander `sonnet`/medium, Orchestrator `fable`/high, 워커 `opus`/medium, 검증 `fable`/high.
 - 이미 떠 있는 세션에는 적용되지 않는다. 바꾼 뒤 새로 띄우는 세션부터 쓴다.
 - 어떤 명령이 나가는지는 `.agents/bin/herdr-session --dry-run worker-1`처럼 확인한다.
 

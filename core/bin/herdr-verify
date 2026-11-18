@@ -12,8 +12,10 @@
 # 기록: <handoff>/verify/<작업>-<SHA12>-<n>.md, verdicts.tsv. 끝 코드: 0 PASS, 1 ISSUES, 4 BLOCKED, 5 검증 횟수 초과, 2 사용법·준비 실패,
 #   6 ERROR(검증 도구가 판정 줄 없이 끝남: 도구 거절·즉시 종료·시간 초과. 하네스·도구 원인이라 횟수에 세지 않는다),
 #   7 띄우지 않음(도구 한도 부족에 대체 도구 없음, 또는 ERROR가 HERDR_VERIFY_MAX_ERRORS번 쌓임)
-# 한도: codex는 rollout의 rate_limits로 남은 양을 보고, 쓴 비율이 HERDR_VERIFIER_LIMIT_PCT 이상이면
-#   HERDR_VERIFIER_FALLBACK_TOOL·MODEL·EFFORT로 바꾼다. 대체 도구가 없으면 띄우지 않고 끝 코드 7로 알린다.
+# codex를 쓰지 못하면 HERDR_VERIFIER_FALLBACK_TOOL·MODEL·EFFORT로 바꾼다. 대체 도구가 없으면 띄우지 않고 끝 코드 7로 알린다.
+#   한도: rollout의 rate_limits로 쓴 비율을 보고 HERDR_VERIFIER_LIMIT_PCT 이상이면 바꾼다.
+#   설치: codex 명령이 없으면 바꾼다.
+#   실행: codex가 판정 줄 없이 끝나면(로그인·모델 거절 등) 같은 검증을 대체 도구로 한 번 더 돌린다. 시간 초과는 제외한다.
 # 검증 세션은 자기 systemd scope에서 돈다(herdr-scope, 메모리 상한 HERDR_HEAVY_MEM_MAX).
 set -uo pipefail
 BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -104,8 +106,8 @@ else
   [[ -n "$HERDR_WORKER_TOOL" ]] && model="$HERDR_WORKER_MODEL"
 fi
 case "$tool" in
-  codex) model="${model:-gpt-6.1-sol}" ;;
-  claude) model="${model:-opus}" ;;
+  codex) model="${model:-gpt-6.2-astra}" ;;
+  claude) model="${model:-fable}" ;;
   *) echo "검증 도구를 정하지 못했다. harness.env의 HERDR_VERIFIER_TOOL(또는 HERDR_WORKER_TOOL)을 정한다." >&2; exit 2 ;;
 esac
 effort="${effort:-high}"
@@ -131,17 +133,26 @@ if used:
     print(int(pct), time.strftime("%m-%d %H:%M", time.localtime(at)) if at else "?")
 ' 2>/dev/null
 }
+use_fallback() { # codex를 쓰지 못할 때 대체 도구로 바꾼다. 대체 도구가 없으면 1
+  [[ -n "$HERDR_VERIFIER_FALLBACK_TOOL" && "$HERDR_VERIFIER_FALLBACK_TOOL" != codex ]] || return 1
+  echo "$1 — 대체 도구 $HERDR_VERIFIER_FALLBACK_TOOL로 검증한다" >&2
+  tool="$HERDR_VERIFIER_FALLBACK_TOOL" model="$HERDR_VERIFIER_FALLBACK_MODEL" effort="${HERDR_VERIFIER_FALLBACK_EFFORT:-high}"
+  [[ "$tool" == claude ]] && model="${model:-fable}"
+  return 0
+}
+if [[ "$tool" == codex ]] && ! command -v codex >/dev/null; then
+  use_fallback "codex 명령을 찾지 못했다" || {
+    notify "[판정] $task 검증 보류 ${sha:0:12} — codex 명령을 찾지 못해 검증을 띄우지 않았다(횟수에 세지 않음). harness.env의 HERDR_VERIFIER_FALLBACK_TOOL로 대체 도구를 정하면 바로 쓸 수 있다. 그 결정은 사용자 몫이므로 herdr-report \"[차단] $task 검증 도구 없음 …\"로 올린다."
+    exit 7
+  }
+fi
 if [[ "$tool" == codex ]]; then
   read -r used resets <<<"$(codex_used_pct)"
   if [[ -n "${used:-}" && "$used" -ge "$HERDR_VERIFIER_LIMIT_PCT" ]]; then
-    if [[ -n "$HERDR_VERIFIER_FALLBACK_TOOL" && "$HERDR_VERIFIER_FALLBACK_TOOL" != codex ]]; then
-      echo "codex 한도 ${used}%(재설정 $resets) ≥ ${HERDR_VERIFIER_LIMIT_PCT}% — 대체 도구 $HERDR_VERIFIER_FALLBACK_TOOL로 검증한다" >&2
-      tool="$HERDR_VERIFIER_FALLBACK_TOOL" model="$HERDR_VERIFIER_FALLBACK_MODEL" effort="${HERDR_VERIFIER_FALLBACK_EFFORT:-high}"
-      [[ "$tool" == claude ]] && model="${model:-opus}"
-    else
+    use_fallback "codex 한도 ${used}%(재설정 $resets) ≥ ${HERDR_VERIFIER_LIMIT_PCT}%" || {
       notify "[판정] $task 검증 보류 ${sha:0:12} — codex 한도 ${used}%(재설정 $resets)라 검증을 띄우지 않았다(횟수에 세지 않음). harness.env의 HERDR_VERIFIER_FALLBACK_TOOL로 대체 도구를 정하면 바로 쓸 수 있다. 그 결정은 사용자 몫이므로 herdr-report \"[차단] $task 검증 도구 한도 …\"로 올린다."
       exit 7
-    fi
+    }
   fi
 fi
 
@@ -213,41 +224,52 @@ for v in CLAUDECODE CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_SESSION_ID CLAUDE_CODE
   CLAUDE_CODE_EXECPATH CLAUDE_CODE_MESSAGING_SOCKET CLAUDE_CODE_MESSAGING_TOKEN CLAUDE_CODE_SSE_PORT CLAUDE_PID CLAUDE_EFFORT; do
   UNSETS+=(-u "$v")
 done
-if [[ "$tool" == codex ]]; then
-  PERM=(--sandbox workspace-write); [[ "$HERDR_AUTONOMOUS" == 1 ]] && PERM=(--dangerously-bypass-approvals-and-sandbox)
-  AGENT=(codex exec "${PERM[@]}" --skip-git-repo-check -m "$model" -c "model_reasoning_effort=\"$effort\"" -C "$wt" -o "$last_msg" -)
-else
-  PERM=(--permission-mode acceptEdits); [[ "$HERDR_AUTONOMOUS" == 1 ]] && PERM=(--dangerously-skip-permissions)
-  AGENT=(claude -p "${PERM[@]}" --model "$model" --effort "$effort" --no-chrome --settings "$BIN/../config/claude-slim-settings.json")
-fi
 TIMEOUT=(); command -v timeout >/dev/null && TIMEOUT=(timeout -k 30 "$HERDR_VERIFY_TIMEOUT")
-echo "독립 검증: $task ${sha:0:12} · $tool $model/$effort · 범위 ${base:0:12}..${sha:0:12} · ${n}회째"
-start=$(date +%s)
-printf '%s\n' "$prompt" >"$wt/.herdr-prompt.md"
-# 검증 세션을 이 프로세스의 자식으로 바로 띄운다(exec). 이 실행기가 TERM을 받으면(검사 FAIL로 취소) 그 세션도 끝낸다
-apid=""
-trap '[[ -n "$apid" ]] && { kill -TERM "$apid" 2>/dev/null; wait "$apid" 2>/dev/null; }; echo "독립 검증을 취소했다"; exit 143' TERM INT
-# 검증 세션은 자기 scope(cgroup)에서 메모리 상한을 두고 돈다. OOM이 나도 이 검증만 끝난다
-(cd "$wt" && exec "$BIN/herdr-scope" "$HERDR_PROJECT-$HERDR_ROLE-verify" "$HERDR_HEAVY_MEM_MAX" -- \
-  env "${UNSETS[@]}" ENABLE_CLAUDEAI_MCP_SERVERS=false HERDR_VERIFY_RECORD="$out_file" \
-  "${TIMEOUT[@]}" "${AGENT[@]}" <"$wt/.herdr-prompt.md" >"$wt/.herdr-stdout" 2>"$wt/.herdr-stderr") &
-apid=$!
-wait "$apid"
-rc=$?
-trap - TERM INT
-secs=$(($(date +%s) - start))
+run_agent() { # 지금 tool·model·effort로 검증 세션을 돌리고 rc, secs, result를 남긴다
+  if [[ "$tool" == codex ]]; then
+    PERM=(--sandbox workspace-write); [[ "$HERDR_AUTONOMOUS" == 1 ]] && PERM=(--dangerously-bypass-approvals-and-sandbox)
+    AGENT=(codex exec "${PERM[@]}" --skip-git-repo-check -m "$model" -c "model_reasoning_effort=\"$effort\"" -C "$wt" -o "$last_msg" -)
+  else
+    PERM=(--permission-mode acceptEdits); [[ "$HERDR_AUTONOMOUS" == 1 ]] && PERM=(--dangerously-skip-permissions)
+    AGENT=(claude -p "${PERM[@]}" --model "$model" --effort "$effort" --no-chrome --settings "$BIN/../config/claude-slim-settings.json")
+  fi
+  echo "독립 검증: $task ${sha:0:12} · $tool $model/$effort · 범위 ${base:0:12}..${sha:0:12} · ${n}회째"
+  start=$(date +%s)
+  printf '%s\n' "$prompt" >"$wt/.herdr-prompt.md"
+  # 검증 세션을 이 프로세스의 자식으로 바로 띄운다(exec). 이 실행기가 TERM을 받으면(검사 FAIL로 취소) 그 세션도 끝낸다
+  apid=""
+  trap '[[ -n "$apid" ]] && { kill -TERM "$apid" 2>/dev/null; wait "$apid" 2>/dev/null; }; echo "독립 검증을 취소했다"; exit 143' TERM INT
+  # 검증 세션은 자기 scope(cgroup)에서 메모리 상한을 두고 돈다. OOM이 나도 이 검증만 끝난다
+  (cd "$wt" && exec "$BIN/herdr-scope" "$HERDR_PROJECT-$HERDR_ROLE-verify" "$HERDR_HEAVY_MEM_MAX" -- \
+    env "${UNSETS[@]}" ENABLE_CLAUDEAI_MCP_SERVERS=false HERDR_VERIFY_RECORD="$out_file" \
+    "${TIMEOUT[@]}" "${AGENT[@]}" <"$wt/.herdr-prompt.md" >"$wt/.herdr-stdout" 2>"$wt/.herdr-stderr") &
+  apid=$!
+  wait "$apid"
+  rc=$?
+  trap - TERM INT
+  secs=$(($(date +%s) - start))
 
-# 기록: 검증자가 쓴 파일, 없으면 마지막 메시지. 판정 줄이 없으면 BLOCKED
-if [[ -s "$out_file" ]]; then cp "$out_file" "$record"
-elif [[ -s "$last_msg" ]]; then cp "$last_msg" "$record"
-else cp "$wt/.herdr-stdout" "$record" 2>/dev/null || : >"$record"
-fi
-result="$(grep -m1 -oE '판정:[[:space:]]*(PASS|ISSUES|BLOCKED)' "$record" | grep -oE 'PASS|ISSUES|BLOCKED')"
-if [[ -z "$result" ]]; then
-  # 판정 줄 없이 끝났다: 도구 거절, 즉시 종료, 시간 초과. 검증자의 판단이 아니므로 ERROR로 적고 횟수에 세지 않는다
-  result=ERROR
-  { echo "판정 없음(ERROR, 검증 횟수에 세지 않음)"; echo; echo "검증 세션이 판정 줄을 남기지 않았다(끝 코드 $rc, ${secs}초, 124면 시간 제한 HERDR_VERIFY_TIMEOUT=${HERDR_VERIFY_TIMEOUT})."
-    echo "--- stderr 끝부분"; tail -n 30 "$wt/.herdr-stderr" 2>/dev/null; echo "--- 남긴 내용"; cat "$record"; } >"$record.tmp" && mv "$record.tmp" "$record"
+  # 기록: 검증자가 쓴 파일, 없으면 마지막 메시지. 판정 줄이 없으면 BLOCKED
+  if [[ -s "$out_file" ]]; then cp "$out_file" "$record"
+  elif [[ -s "$last_msg" ]]; then cp "$last_msg" "$record"
+  else cp "$wt/.herdr-stdout" "$record" 2>/dev/null || : >"$record"
+  fi
+  result="$(grep -m1 -oE '판정:[[:space:]]*(PASS|ISSUES|BLOCKED)' "$record" | grep -oE 'PASS|ISSUES|BLOCKED')"
+  if [[ -z "$result" ]]; then
+    # 판정 줄 없이 끝났다: 도구 거절, 즉시 종료, 시간 초과. 검증자의 판단이 아니므로 ERROR로 적고 횟수에 세지 않는다
+    result=ERROR
+    { echo "판정 없음(ERROR, 검증 횟수에 세지 않음)"; echo; echo "검증 세션이 판정 줄을 남기지 않았다(끝 코드 $rc, ${secs}초, 124면 시간 제한 HERDR_VERIFY_TIMEOUT=${HERDR_VERIFY_TIMEOUT})."
+      echo "--- stderr 끝부분"; tail -n 30 "$wt/.herdr-stderr" 2>/dev/null; echo "--- 남긴 내용"; cat "$record"; } >"$record.tmp" && mv "$record.tmp" "$record"
+  fi
+}
+run_agent
+# codex가 판정 없이 곧바로 끝났으면(로그인·모델 거절 등) 쓰지 못한 것으로 보고 대체 도구로 한 번 더 돌린다.
+# 시간 초과(124)는 도구를 못 쓴 것이 아니므로 바꾸지 않는다. codex 실패는 기록에 남기되 verdicts.tsv의 ERROR로 세지 않는다
+if [[ "$result" == ERROR && "$tool" == codex && "$rc" != 124 ]] && use_fallback "codex가 판정 없이 끝났다(끝 코드 $rc)"; then
+  failed="$(cat "$record")"
+  git -C "$wt" reset -q --hard "$sha" 2>/dev/null; git -C "$wt" clean -qfdx 2>/dev/null
+  run_agent
+  { cat "$record"; echo; echo "--- 앞서 codex가 판정 없이 끝나 $tool로 다시 돌렸다. codex 기록:"; printf '%s\n' "$failed"; } >"$record.tmp" && mv "$record.tmp" "$record"
 fi
 [[ -s "$tsv" ]] || printf 'epoch\ttime\trole\ttask\tbase\tsha\tpatch\tresult\trecord\ttool\tmodel\teffort\tseconds\n' >"$tsv"
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$(date +%Y-%m-%dT%H:%M:%S%z)" "$HERDR_ROLE" "$task" \

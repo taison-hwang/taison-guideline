@@ -46,7 +46,7 @@
 | Orchestrator가 비정상으로 끝나면 사람 없이 다시 뜬다. 처리되지 않은 `[CLEAR 요청]`은 감시자가 대신 정리한다 | `herdr-watch`(hc 밖 systemd 서비스, `holder_lost`·SIGKILL만, 한 시간 상한, `HERDR_CLEAR_TIMEOUT`), `herdr-clear` | 복구가 사용자가 우연히 있을 때만 됐고(E2), Orchestrator의 정리가 Commander에 묶여 새 배정이 멈췄다(E6) | `watch.log`의 재기동 중 다시 같은 이유로 끝난 비율을 본다 |
 | Orchestrator는 정리를 기다리는 동안에도 같은 묶음의 배정과 병합 지시를 계속한다 | 소프트 신호 hook 문구, `managing-session-context` | 정리 대기로 새 배정을 미뤄 워커가 놀았다(E6) | 신호 뒤 정리까지 워커가 쉰 시간을 본다 |
 | 검증 도구가 판정 없이 끝난 것(ERROR)은 판정·횟수가 아니다 | `herdr-verify`(ERROR 기록, `HERDR_VERIFY_MAX_ERRORS`, 앞 기록을 글자 단위로 자르고 프롬프트의 잘못된 UTF-8을 버림) | 앞 기록을 바이트로 잘라 한글이 끊기자 codex가 1초 만에 거절했고, 그것이 횟수에 들어가 작업이 [차단]됐다(ohmystock 2026-11-12, E5, 3회) | verdicts.tsv의 ERROR 비율을 본다 |
-| 검증 도구 한도가 모자라면 대체 도구로 바꾸거나 알린다 | `herdr-verify`(codex rollout의 `rate_limits`, `HERDR_VERIFIER_LIMIT_PCT`, `HERDR_VERIFIER_FALLBACK_*`) | 한도 98%에서 검증·병합이 사용자 답까지 멈췄다(E4) | 한도 보류 횟수와 대체 도구 판정의 오탐 비율을 본다 |
+| 검증 도구 codex를 쓰지 못하면(한도, 미설치, 판정 없이 곧바로 끝남) 대체 도구로 바꾸거나 알린다 | `herdr-verify`(codex rollout의 `rate_limits`, `HERDR_VERIFIER_LIMIT_PCT`, `command -v codex`, 끝 코드, `HERDR_VERIFIER_FALLBACK_*`) | 한도 98%에서 검증·병합이 사용자 답까지 멈췄다(E4) | 한도 보류 횟수와 대체 도구 판정의 오탐 비율을 본다 |
 | 디스크 여유가 모자라면 하네스 캐시부터 지우고, 그래도 모자라면 검사를 보류한다 | `herdr-check`(`HERDR_MIN_DISK_GB`, 끝 코드 5), `herdr-clean` | 디스크가 1.1GB까지 줄어 사용자 승인이 필요한 docker 정리까지 갔다(E1) | 보류 횟수와 `herdr-clean`이 되찾은 크기를 본다 |
 | Commander의 메시지에는 하네스가 시각을 붙이고, Claude 세션에 esc를 두 번 보내지 않는다 | `herdr-tell`, `herdr-report`의 보낸 시각, `herdr-clear`, 문구 | Commander가 결정 시각을 추측해 적었고, 입력창을 비우려던 esc esc가 되감기 창을 열었다(ohmystock 2026-11-12) | 메시지 시각 오기와 되감기 사고를 센다 |
 | 사용자 결정은 그 결정이 필요한 단계만 막는다 | 문구 | 결정에 걸린 작업도 대부분은 선택지와 무관하다(크기 예산 사례) | 결정 대기 중 진행한 일이 결정 뒤 버려진 비율을 본다 |
