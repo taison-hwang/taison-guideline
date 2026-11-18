@@ -60,6 +60,7 @@ HERDR_LIGHT_DENY_PATHS="migrations/* */auth/*"                     # 바꾸면 �
 
 | 관문                               | 언제                                                                                                        | 무엇을                                                                                                                                                                                      | 실패하면                                                                          |
 | ---------------------------------- | ----------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| 셸 명령 직전 (`bash-guard.sh` hook) | Claude가 `Bash`, Codex가 셸 명령을 실행하기 직전(Codex의 도구 이름은 확인하지 않아 모든 도구에 걸고 명령이 있을 때만 본다) | 측정에서 되풀이된 함정: zsh의 따옴표 없는 `=` 낱말(`echo ====`), `timeout`·백그라운드로 감싼 `herdr-report`, 커밋 검사 건너뛰기(`core.hooksPath=/dev/null`, `--no-verify`), `git merge`·`rebase` 출력을 파이프로 넘긴 뒤 `&&`로 잇기. 따옴표 안 글자와 히어독 본문은 보지 않는다 | 실행하지 않고 고치는 방법을 돌려준다 |
 | 편집 직후 (`check-edit.sh` hook) | Claude가 `Edit`·`Write`·`MultiEdit`·`NotebookEdit`, Codex가 `apply_patch`로 파일을 고칠 때마다 | `HERDR_CHECK_FILE_CMD`로 고친 파일만                                                                                                                                                      | 출력 끝부분을 에이전트에게 돌려줘 그 자리에서 고치게 한다. 편집은 되돌리지 않는다 |
 | `[완료]` 보고 (`herdr-report`) | 워커가 `herdr-report "[완료] …"`를 실행할 때 | worktree면 커밋 안 된 변경이 없는지 확인하고 전체 검사. 메인 체크아웃에서 보내면 다른 세션의 변경이 섞여 있으므로 커밋된 HEAD만 보고, PASS 기록이 없으면 검사용 worktree에서 뒤에서 검사한다 | 보고를 보내지 않는다. 통과하면 보고 끝에 `검사 PASS <SHA>`를 붙인다 |
 | `[병합완료]` 보고 (`herdr-report`) | 워커가 병합 뒤 `herdr-report "[병합완료] <작업 ID> <SHA> …"`를 실행할 때 | 그 SHA가 메인 체크아웃 HEAD에 들어 있는지 확인하고, 그 SHA의 검사 PASS 기록을 붙인다. 기록이 없으면 그 SHA를 뒤에서 검사한다 | SHA가 들어 있지 않으면 보내지 않는다 |
@@ -169,7 +170,10 @@ Commander에게 목표를 말한다. Orchestrator가 없으면 Commander가 띄�
 .agents/bin/herdr-usage --by task                       # 작업별
 .agents/bin/herdr-usage --by role,day --since 2026-11-09
 .agents/bin/herdr-usage --tsv                           # 기계용(탭 구분)
+.agents/bin/herdr-usage --errors --since 2026-11-09     # 세션 3개 이상에서 되풀이된 도구 오류(--errors 2로 기준 변경)
 ```
+
+`--errors`는 오류로 표시된 도구 결과에서 원인 줄을 골라 경로·SHA·숫자를 묶은 모양으로 세고, 세션 N개(기본 3) 이상에서 나온 것만 낸다. Orchestrator가 완료 선언 때 보고 막을 수단을 찾는다. Claude 기록만 읽는다.
 
 | 기록 | 누가 언제 | 내용 |
 | --- | --- | --- |
@@ -309,7 +313,7 @@ core/                 프로젝트에 복사되는 원본
   bin/herdr-tell      Commander → Orchestrator 메시지(보낸 시각을 붙인다)
   bin/herdr-clear     세션 정리(/clear) 뒤 다음 메시지
   bin/herdr-clean     하네스 캐시 정리(쓰지 않는 검사·검증 worktree, 오래된 로그)
-  hooks/              역할 주입·compact 복구, 소프트 신호, compact 직전 스냅샷, 보고 누락 방지, 편집 직후 검사
+  hooks/              역할 주입·compact 복구, 소프트 신호, compact 직전 스냅샷, 보고 누락 방지, 편집 직후 검사, 셸 명령 막기
   config/             Claude·Codex hook 설정, 사용량 단가표
 templates/            init 때 한 번만 넣는 파일
 bin/harness           init, sync

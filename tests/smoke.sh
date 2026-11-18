@@ -940,6 +940,52 @@ check "구현 스킬: 설계·작업 종류별·완료 근거" "grep -q '## 코�
 check "Orchestrator: 대기열 순번으로 만료, 급함은 임계 경로만" "grep -q 'herdr-queue urgent' '$O_REF2' && grep -q '임계 경로에만 쓴다' '$O_REF2'"
 check "Commander: 실행기 세션, 전하지 못한 보고, herdr-tell, esc esc 금지" "grep -q 'herdr-tell' '$P/.agents/skills/running-herdr-autopilot/references/commander.md' && grep -q 'pending-decisions.md' '$P/.agents/skills/running-herdr-autopilot/references/commander.md' && grep -q 'esc esc' '$P/.agents/skills/running-herdr-autopilot/references/commander.md' && grep -q 'esc esc' '$P/.agents/skills/managing-session-context/SKILL.md'"
 check "Orchestrator: 감시자와 자동 복구, ERROR는 판정 아님" "grep -q '^## 감시자와 자동 복구' '$O_REF2' && grep -q '\`ERROR\`(검증 도구가 판정 없이 끝남)는 판정이 아니다' '$O_REF2'"
+
+echo "== 셸 명령 막기(bash-guard)"
+BG="$P/.agents/hooks/bash-guard.sh"
+# guard <셸> <명령> [run_in_background] [도구 이름]: 막으면 끝 코드 2
+guard() { jq -nc --arg c "$2" --argjson bg "${3:-false}" --arg t "${4:-Bash}" '{tool_name:$t,tool_input:{command:$c,run_in_background:$bg}}' | SHELL="$1" "$BG" 2>/dev/null; }
+blocks() { guard "$@"; [ $? -eq 2 ]; }
+check "zsh: 따옴표 없는 ==== 막음" "blocks /bin/zsh 'echo ===='"
+check "zsh: [ a == b ] 막음" "blocks /bin/zsh '[ \"\$a\" == 1 ] && echo ok'"
+check "zsh: 따옴표 안, [[ ]], \$(( )), a==b, 히어독 본문은 통과" "guard /bin/zsh 'echo \"====\"; [[ \$a == 1 ]]; echo \$((1 == 1)) a==b --x=y' && guard /bin/zsh \"\$(printf 'cat <<EOF\n====\nEOF')\""
+check "bash에서는 ==== 통과" "guard /bin/bash 'echo ===='"
+check "timeout으로 감싼 herdr-report 막음" "blocks /bin/zsh 'timeout 60 herdr-report \"[완료] A-01 x\"'"
+check "백그라운드 herdr-report 막음(도구 옵션, &)" "blocks /bin/zsh 'herdr-report \"[완료] A-01 x\"' true && blocks /bin/zsh 'herdr-report \"[완료] A-01 x\" &'"
+check "앞에서 보내는 herdr-report·--bg는 통과" "guard /bin/zsh 'herdr-report \"[완료] A-01 x\"' && guard /bin/zsh 'herdr-report --bg \"[완료] A-01 x\" && echo sent'"
+check "실제 기록의 오탐: 2>&1, 큰따옴표 안 작은따옴표, merge-base 파이프는 통과" "guard /bin/zsh 'herdr-report \"[진행] A-01 x\" 2>&1 | tail -3' && guard /bin/zsh \"herdr-report \\\"[진행] A-01 it's (<16)\\\" && echo ok\" && guard /bin/zsh 'git merge-base main b | cut -c1-7'"
+check "커밋 검사 건너뛰기 막음" "blocks /bin/zsh 'git -c core.hooksPath=/dev/null commit -qm x' && blocks /bin/zsh 'git commit --no-verify -m x'"
+check "메시지 안의 --no-verify는 통과" "guard /bin/zsh 'git commit -m \"--no-verify 금지 규칙 추가\"'"
+check "병합 출력을 파이프로 넘기고 &&로 이으면 막음" "blocks /bin/zsh 'git merge --ff-only b | tail -3 && git branch -d b' && blocks /bin/zsh 'git rebase main 2>&1 | tail -2 && git log -1' && guard /bin/zsh 'git rebase main 2>&1 | tail -2; git status' && guard /bin/zsh 'git merge --ff-only b && git branch -d b'"
+check "apply_patch 본문은 보지 않음" "guard /bin/zsh '*** Add File: x\n+git commit --no-verify' false apply_patch"
+check "Claude·Codex 설정에 PreToolUse 등록" "jq -e '.hooks.PreToolUse[] | select(.matcher == \"Bash\") | .hooks[].command | test(\"bash-guard.sh\")' '$P/.claude/settings.json' >/dev/null && jq -e '.hooks.PreToolUse[].hooks[].command | test(\"bash-guard.sh\")' '$P/.codex/hooks.json' >/dev/null"
+
+echo "== 되풀이 오류 세기"
+ED="$HOME/.claude/herdr/handoff/errdemo"; mkdir -p "$ED" "$WORK/err"
+printf 'epoch\ttime\trole\ttool\tmodel\tsession_id\tsource\ttranscript\n' >"$ED/sessions.tsv"
+# err_session <id> <역할> <오류 본문>: 오류 하나와 성공 하나가 든 Claude 대화 기록
+err_session() {
+  {
+    printf '{"type":"assistant","timestamp":"2026-11-10T01:00:00Z","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"x"}},{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"y"}}]}}\n'
+    jq -nc --arg b "$3" '{type:"user",timestamp:"2026-11-10T01:00:01Z",message:{content:[{type:"tool_result",tool_use_id:"t1",is_error:true,content:$b},{type:"tool_result",tool_use_id:"t2",is_error:false,content:"fine"}]}}'
+  } >"$WORK/err/$1.jsonl"
+  printf '1\tx\t%s\tclaude\tm\t%s\tstartup\t%s\n' "$2" "$1" "$WORK/err/$1.jsonl" >>"$ED/sessions.tsv"
+}
+err_session e1 worker-1 'Exit code 1
+(eval):1: == not found'
+err_session e2 worker-2 'Exit code 1
+(eval):3: === not found'
+err_session e3 verifier-1 'Exit code 1
+(eval):12: == not found'
+err_session e4 worker-1 'Exit code 2
+ls: /tmp/abc123: No such file or directory'
+errs() { "$P/.agents/bin/herdr-usage" --project errdemo --tsv "$@"; }
+out="$(errs --errors)"
+check "세션 3개 이상 되풀이한 오류 모양만 냄(숫자·경로를 묶음)" "[ \"\$(printf '%s\n' \"\$out\" | sed 1d | wc -l | tr -d ' ')\" = 1 ] && printf '%s\n' \"\$out\" | sed 1d | awk -F'\t' '\$1==3 && \$2==3 && \$3==\"verifier-1,worker-1,worker-2\"' | grep -q 'not found'"
+check "기준 세션 수를 바꿀 수 있음" "[ \"\$(errs --errors 1 | sed 1d | wc -l | tr -d ' ')\" = 2 ]"
+check "Orchestrator는 완료 선언 때 되풀이 오류를 봄" "grep -q 'herdr-usage --errors --since' '$P/.agents/skills/running-herdr-autopilot/references/orchestrator.md'"
+check "--since 뒤의 오류만" "[ \"\$(errs --errors 1 --since 2026-11-11 | sed 1d | wc -l | tr -d ' ')\" = 0 ]"
+
 check "저장소 전체 링크" "python3 -I '$ROOT/core/skills/writing-project-docs/scripts/check_md_links.py' '$ROOT/README.md' '$ROOT/core' '$ROOT/docs' '$ROOT/templates' >/dev/null"
 check "설치된 docs 색인" "python3 -I '$ROOT/core/skills/writing-project-docs/scripts/check_md_links.py' '$P/docs' >/dev/null"
 

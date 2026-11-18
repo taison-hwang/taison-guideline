@@ -6,6 +6,8 @@
 
 | 규칙 | 강제 수단 | 전제 | 제거 시험 |
 | --- | --- | --- | --- |
+| 측정에서 되풀이된 셸 함정을 쓰지 않는다(zsh `=` 낱말, `timeout`·백그라운드 `herdr-report`, 커밋 검사 건너뛰기, 병합 출력 파이프 뒤 `&&`) | `PreToolUse` hook(`bash-guard.sh`) | 문구로 적어도 되풀이된다. jobtailor 역할 세션 50개의 Bash 명령 7,941개 중 192개(2.4%)가 걸리고, 표본은 모두 실제 사례였다(2026-11-12) | hook을 끄고 `herdr-usage --errors`로 같은 오류 모양의 세션 수를 견준다 |
+| 정산 때 되풀이 오류를 본다 | Orchestrator 8절 문구, `herdr-usage --errors` | Orchestrator는 받은 보고 안에서만 되풀이를 센다. zsh `== not found`는 역할 세션 30개에서 69번 났지만 보고되지 않았다 | 두 묶음 동안 막을 수단이 하나도 나오지 않으면 8절 문구를 뺀다 |
 | 모든 워커 턴은 보고로 끝난다 | `Stop` hook(`worker-turn.sh`), `[미보고]` | 화면에만 쓰고 보고를 빠뜨려 진행이 멈춘다(실측) | hook을 끄고 미보고 빈도를 잰다 |
 | 세션은 시작·정리 뒤 역할을 받는다 | `SessionStart` hook(`session-start.sh`) | 지침 안내만으로는 전역 스킬을 읽는다(실측) | 전역 스킬을 정리한 뒤 주입을 줄여 본다 |
 | compact 뒤 상태를 복구한다 | `PreCompact`·`SessionStart` hook | compact 요약이 수용 기준과 결정을 잃을 수 있다 | 복구 주입을 끄고 재작업을 비교한다 |

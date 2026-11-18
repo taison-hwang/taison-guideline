@@ -1,5 +1,12 @@
 {
   "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          { "type": "command", "command": "\"$(git rev-parse --show-toplevel)\"/.agents/hooks/bash-guard.sh", "timeout": 10 }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "^apply_patch$",

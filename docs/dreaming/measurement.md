@@ -45,6 +45,7 @@
 - jobtailor `AGENTS.md` 프로젝트 규칙에 ruff 한글 폭, zsh, 임시 Python 스크립트, 뮤테이션 시간, macOS sed를 묶은 "다시 겪은 함정" 한 줄을 더했다.
 - 뒤에서 보낸 보고를 Stop hook이 세지 않는 문제는 hook을 고치지 않았다. 원인은 `herdr-report`를 Bash 도구의 백그라운드로 돌린 것이다. 하네스에는 이미 곧바로 돌아오는 `herdr-report --bg`가 있으므로 규칙 문장으로 막았다.
 - 효과는 다음 측정(같은 방법으로 워커 세션 10개)에서 같은 함정이 줄었는지로 본다.
+- 2026-11-12: "같은 실수가 두 번이면 문구가 아니라 구조·hook으로 막는다"(Orchestrator 4절)에 맞춰, `herdr-report`·커밋 검사·병합 파이프 문구는 `bash-guard.sh` hook으로 옮기고 `worker.md`에서 지웠다. zsh `=` 낱말도 hook이 막는다. 되풀이 세기는 `herdr-usage --errors`가 맡는다.
 
 ## 이 측정의 한계
 
