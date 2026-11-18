@@ -79,11 +79,13 @@ HERDR_HEAVY_MEM_MAX=50%
 # shellcheck disable=SC1091
 [[ -f "$BIN/../harness.env" ]] && . "$BIN/../harness.env"
 
-prev="$(verdict_of)"
-if [[ "$prev" != NONE && -z "$focus" ]]; then
+reuse_verdict() { # 같은 패치의 판정이 있으면 다시 검증하지 않고 그 판정으로 끝낸다(ERROR 는 판정이 아니라 다시 돈다)
+  local prev; prev="$(verdict_of)"
+  [[ "$prev" != NONE && -z "$focus" ]] || return 0
   echo "이 패치는 이미 판정을 받았다: $prev. 다시 판정받으려면 --focus로 근거를 넘긴다." >&2
   case "$prev" in PASS\ *) exit 0 ;; ISSUES\ *) exit 1 ;; *) exit 4 ;; esac
-fi
+}
+reuse_verdict
 
 # 횟수: 이 작업의 마지막 [배정] 뒤로 센다. 같은 지적을 두고 고치고 다시 받기를 끝없이 돌지 않게 한다
 since="$(awk -F'\t' -v t="$task" '$5 == "배정" && $6 == t { e = $1 } END { print e + 0 }' "$dir/received.tsv" 2>/dev/null)"
@@ -135,7 +137,7 @@ if used:
 }
 use_fallback() { # codex를 쓰지 못할 때 대체 도구로 바꾼다. 대체 도구가 없으면 1
   [[ -n "$HERDR_VERIFIER_FALLBACK_TOOL" && "$HERDR_VERIFIER_FALLBACK_TOOL" != codex ]] || return 1
-  echo "$1 — 대체 도구 $HERDR_VERIFIER_FALLBACK_TOOL로 검증한다" >&2
+  echo "$1 — 대체 도구 ${HERDR_VERIFIER_FALLBACK_TOOL}로 검증한다" >&2
   tool="$HERDR_VERIFIER_FALLBACK_TOOL" model="$HERDR_VERIFIER_FALLBACK_MODEL" effort="${HERDR_VERIFIER_FALLBACK_EFFORT:-high}"
   [[ "$tool" == claude ]] && model="${model:-fable}"
   return 0
@@ -161,7 +163,10 @@ assign="$dir/assign/$HERDR_ROLE/$safe.txt"
 [[ -n "$criteria" ]] && assign="$criteria"
 [[ -s "$assign" ]] || { echo "[배정] 원문을 찾지 못했다($assign). --criteria <파일>로 [배정]의 목표·수용 기준을 그대로 넘긴다." >&2; exit 2; }
 top="$(git rev-parse --show-toplevel)"
-spec="$(awk -v p="$top" '{ while ((i = index($0, p)) > 0) $0 = substr($0, 1, i - 1) "<작성자 worktree: 쓰지 않는다>" substr($0, i + length(p)); print }' "$assign")"
+# macOS의 /var·/tmp는 /private/…의 링크라 git은 /private/…로, [배정]은 /var/…로 적을 수 있다. 긴 쪽부터 둘 다 지운다
+alt=""; [[ "$top" == /private/* ]] && alt="${top#/private}"
+spec="$(awk -v p="$top" -v q="$alt" 'function cut(s, p,   i) { if (p == "") return s; while ((i = index(s, p)) > 0) s = substr(s, 1, i - 1) "<작성자 worktree: 쓰지 않는다>" substr(s, i + length(p)); return s }
+  { print cut(cut($0, p), q) }' "$assign")"
 
 # 같은 작업의 앞 판정(다른 패치). 있으면 지적한 항목과 고친 부분만 다시 본다
 last="$(awk -F'\t' -v t="$task" 'NR > 1 && $4 == t && $8 != "ERROR" { r = $8 "\t" $6 "\t" $9 } END { print r }' "$tsv" 2>/dev/null)"
@@ -171,12 +176,36 @@ record="$dir/verify/$safe-${sha:0:12}-$n.md"
 [[ -e "$record" ]] && record="${record%.md}-$(date +%s).md" # 앞 시도가 ERROR였으면 같은 번호가 남아 있다
 wt="${XDG_CACHE_HOME:-$HOME/.cache}/herdr/verify/$HERDR_PROJECT/$HERDR_ROLE-$safe"
 mkdir -p "$(dirname "$wt")"
-exec 9>"$wt.lock"
-command -v flock >/dev/null && flock 9
+# 잠금: 같은 역할·같은 작업의 검증은 한 번에 하나만 돈다. 뒤 것은 앞 것이 끝날 때까지 기다리고 앞 것의 폴더를 지우지 않는다.
+# 폴더 만들기(mkdir)는 맥·리눅스 모두 한 번에 하나만 성공하므로 flock 이 없는 기계에서도 걸린다(flock 이 있어도 이 방법 하나만 쓴다).
+# 잠금 폴더에 쥔 프로세스 번호를 적는다. 그 프로세스가 없으면(죽음) 버려진 잠금으로 보고 걷은 뒤 넘어간다.
+lk="$wt.lockd" waited=""
+while ! mkdir "$lk" 2>/dev/null; do
+  holder="$(cat "$lk/pid" 2>/dev/null)"
+  # 번호가 없으면 막 만든 중이거나 적기 전에 죽은 것이다. 1분이 지나도 없으면 버려진 것으로 본다
+  if { [[ -n "$holder" ]] && ! kill -0 "$holder" 2>/dev/null; } || { [[ -z "$holder" && -n "$(find "$lk" -maxdepth 0 -mmin +1 2>/dev/null)" ]]; }; then
+    echo "버려진 잠금을 걷는다(쥔 프로세스 ${holder:-번호 없음}이 없다): $lk" >&2
+    mv "$lk" "$lk.stale.$$" 2>/dev/null && rm -rf "$lk.stale.$$"
+    continue
+  fi
+  [[ -z "$waited" ]] && { waited=1; echo "같은 작업의 검증(프로세스 ${holder:-?})이 돌고 있어 끝나기를 기다린다: $lk" >&2; }
+  sleep 2
+done
+echo $$ >"$lk/pid"
+release() { [[ "$(cat "$lk/pid" 2>/dev/null)" == "$$" ]] && rm -rf "$lk"; return 0; }
+trap release EXIT
+# 기다리는 동안 앞 검증이 같은 패치의 판정을 냈을 수 있다. 잠금을 쥔 뒤 다시 본다(같은 패치를 두 번 검증하지 않게)
+reuse_verdict
+[[ -e "$record" ]] && record="${record%.md}-$(date +%s).md" # 기다리는 동안 앞 시도가 같은 번호로 ERROR 기록을 남겼을 수 있다
 git worktree prune 2>/dev/null
-[[ -e "$wt" ]] && { git worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"; }
+[[ -e "$wt" ]] && { git worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"; } # 잠금을 쥐었으니 남은 폴더는 끝난 검증의 것이다
 git worktree add -q --detach "$wt" "$sha" || { echo "검증용 worktree를 만들지 못했다: $wt" >&2; exit 2; }
-cleanup() { git worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"; git worktree prune 2>/dev/null; }
+# 끝날 때(끝 신호 포함)는 이 실행이 만든 폴더만 지운다. 표를 넣어 두고, 같은 경로에 다른 실행이 새로 만든 폴더면 남긴다
+own="$$-$(date +%s)-$RANDOM"; printf '%s\n' "$own" >"$wt/.herdr-owner"
+cleanup() {
+  if [[ "$(cat "$wt/.herdr-owner" 2>/dev/null)" == "$own" ]]; then git worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"; fi
+  git worktree prune 2>/dev/null; release
+}
 trap cleanup EXIT
 out_file="$wt/.herdr-verdict.md" last_msg="$wt/.herdr-last-message.md"
 
@@ -193,7 +222,7 @@ prompt="$(
 - 커밋 메시지, 주석, 문서의 설명은 근거가 아니다. 아래 [배정]의 수용 기준마다 실제로 실행하거나 코드를 읽어 확인한다.
 - 사용자가 쓰는 경로를 실행한다. 테스트 통과만으로 기능이 동작한다고 판정하지 않는다.
 - [배정]에 "독립 검증" 항목이 있으면 그 항목을 적힌 순서(위험이 큰 것부터)대로 본다. 수용 기준 전체를 다시 하지 않는다.
-- 전체 테스트·전체 e2e·전체 빌드는 돌리지 않는다(하네스가 따로 돌린다). 바뀐 코드와 그 의존 범위만 본다. 무거운 명령은 herdr-queue run --role ${HERDR_ROLE}-verify -- <명령> 으로 돌린다.
+- 전체 테스트·전체 e2e·전체 빌드는 돌리지 않는다(하네스가 따로 돌린다). 바뀐 코드와 그 의존 범위만 본다. 무거운 명령은 $BIN/herdr-queue run --role ${HERDR_ROLE}-verify -- <명령> 으로 돌린다. 이 위치 안의 .agents/bin 사본(옛 판일 수 있다)은 쓰지 않는다.
 - 차단 기준: 재현 명령과 출력으로 증명한 것만 막는다. 사용자가 겪을 버그, 실패한 검사, 이번 변경으로 틀려진 문서가 해당한다. 이미 있던 문제, 스타일, 가능성만 있는 위험은 막지 않고 후속 제안으로 적는다. 찾은 문제를 사소하다고 넘기지 말고 이 기준으로 나눈다.
 - 기록: ${out_file} 에 쓴다. 첫 줄은 정확히 "판정: PASS", "판정: ISSUES", "판정: BLOCKED" 중 하나다. 이어서 항목별 결과, 실행한 명령과 출력, 차단 결함(재현 명령과 출력), 후속 제안을 적는다. BLOCKED는 실행할 수 없었던 이유를 적는다.
 - 끝나면 마지막 메시지에 판정 줄을 한 번 더 쓴다.
@@ -269,7 +298,7 @@ if [[ "$result" == ERROR && "$tool" == codex && "$rc" != 124 ]] && use_fallback 
   failed="$(cat "$record")"
   git -C "$wt" reset -q --hard "$sha" 2>/dev/null; git -C "$wt" clean -qfdx 2>/dev/null
   run_agent
-  { cat "$record"; echo; echo "--- 앞서 codex가 판정 없이 끝나 $tool로 다시 돌렸다. codex 기록:"; printf '%s\n' "$failed"; } >"$record.tmp" && mv "$record.tmp" "$record"
+  { cat "$record"; echo; echo "--- 앞서 codex가 판정 없이 끝나 ${tool}로 다시 돌렸다. codex 기록:"; printf '%s\n' "$failed"; } >"$record.tmp" && mv "$record.tmp" "$record"
 fi
 [[ -s "$tsv" ]] || printf 'epoch\ttime\trole\ttask\tbase\tsha\tpatch\tresult\trecord\ttool\tmodel\teffort\tseconds\n' >"$tsv"
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date +%s)" "$(date +%Y-%m-%dT%H:%M:%S%z)" "$HERDR_ROLE" "$task" \

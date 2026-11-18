@@ -217,11 +217,14 @@ Commander에게 목표를 말한다. Orchestrator가 없으면 Commander가 띄�
 ```bash
 .agents/bin/herdr-queue                    # 실행·대기 중인 검사, 순번, 경과
 .agents/bin/herdr-queue urgent worker-3    # 그 역할의 검사를 맨 앞으로(대기 중이 아니면 다음 검사 한 번)
+.agents/bin/herdr-queue drop worker-3 --sha 1a2b3c   # 쓸모없어진 대기 줄을 뺀다(--running이면 실행 중인 줄도). 실패가 아니라 DROPPED로 남는다
 .agents/bin/herdr-queue run --role worker-1 -- make test-int   # 무거운 명령을 대기열 아래서 직접 돌린다
 ```
 
 - 동시에 도는 수는 `HERDR_HEAVY_SLOTS`(기본 1)다. 순서는 급함, 들어온 순이다. 프로세스가 죽은 자리는 다음 검사가 치운다.
-- 시작 가드: 자리를 얻은 뒤에도 가용 메모리가 `HERDR_HEAVY_MIN_MEM_GB` 이상, 1분 부하가 `HERDR_HEAVY_MAX_LOAD` 미만이 될 때까지 기다린다(0이면 보지 않음).
+- 시작 가드: 자리를 얻은 뒤에도 가용 메모리가 `HERDR_HEAVY_MIN_MEM_GB` 이상, 1분 부하가 `HERDR_HEAVY_MAX_LOAD` 미만이 될 때까지 기다린다(0이면 보지 않음). 가용 메모리는 리눅스 `/proc/meminfo`, macOS `vm_stat`로 읽는다.
+- 자리 수와 가드 값은 기다리는 동안에도 `.agents/harness.env`에서 다시 읽는다. 파일을 고치면 대기 중인 검사도 새 값을 따른다.
+- 병합 뒤 전체 검사는 그 커밋이 품는(조상인) 앞 커밋의 병합 뒤 검사를 대기 중이든 실행 중이든 거둔다. 실패가 아니라 `SUPERSEDED`로 남는다.
 - 기다리는 동안 순번과 앞 검사를 알린다. 시간 제한은 실행에만 걸리므로 대기열 뒤에 있다는 이유로 실패하지 않는다. 시간 초과나 중단 때는 검사 프로세스 묶음째 끝내 고아 검사가 남지 않는다.
 - 급함은 Orchestrator가 임계 경로의 검사에만 쓴다.
 
@@ -231,7 +234,7 @@ Commander에게 목표를 말한다. Orchestrator가 없으면 Commander가 띄�
 
 1. 곧바로 `[진행] A-01 커밋 <SHA> 검사 중(뒤에서) 예상 최대 13m(지난 PASS 8회 중) · 대기열 2건`이 Orchestrator에 간다. 독립 검증 작업이면 `검사·독립 검증 중(뒤에서)`이고, 검증 서브에이전트가 검사와 함께 돈다.
 2. 그동안 워커는 같은 묶음의 다음 작업을 그 커밋 위에 쌓는다. 검사 중인 커밋은 바꾸지 않는다.
-3. PASS면 그 SHA로 `[완료] … · 검사 PASS <SHA>`(독립 검증 작업은 `· 독립 검증 PASS <SHA> <기록>`도)가 자동으로 간다. 검사 FAIL이면 `[완료]`는 가지 않고(검증도 취소), 워커 세션에 `[검사 FAIL]`과 로그 경로가, Orchestrator에 "고치는 중"이 간다. 판정이 ISSUES·BLOCKED면 워커 세션에 `[판정]`과 기록 경로가 간다.
+3. PASS면 그 SHA로 `[완료] … · 검사 PASS <SHA>`(독립 검증 작업은 `· 독립 검증 PASS <SHA> <기록>`도)가 자동으로 간다. 검사 FAIL이면 `[완료]`는 가지 않고(검증은 끝까지 돌아 판정을 따로 알린다), 워커 세션에 `[검사 FAIL]`과 로그 경로가, Orchestrator에 "고치는 중"이 간다. 판정이 ISSUES·BLOCKED면 검사를 기다리지 않고 바로 워커 세션에 `[판정]`과 기록 경로가 간다. ISSUES면 그 커밋의 검사는 거둔다(`DROPPED`). 같은 역할의 검사는 `herdr-lock.sh`(mkdir 잠금, flock 없는 macOS에서도 걸림)로 차례로 돈다.
 
 병합은 여전히 커밋마다 검사 PASS와 판정 PASS가 있어야 하고, 워커는 `[병합]`에 적힌 SHA까지만 병합한다. 쌓은 작업을 옮기는 순서는 `worker.md`에 있다.
 
@@ -257,7 +260,7 @@ hc kill t3                                                         # 세션 끝�
 | 감시자(`herdr-watch`) | hc 밖의 systemd 사용자 서비스다. Orchestrator가 `holder_lost`·SIGKILL로 끝나면 `재개`와 함께 다시 띄우고, Commander가 없으면 다시 알리고, 처리되지 않은 `[CLEAR 요청]`을 대신 실행한다. 세션도 할 일도 없이 6시간이 지나면 끝난다 | `HERDR_WATCH*`, `HERDR_CLEAR_TIMEOUT` |
 | 세션별 cgroup(`herdr-scope`) | 세션·무거운 검사·검증 서브에이전트가 각자 systemd scope에서 돈다. 메모리가 모자라면 가장 큰 것 하나만 끝나고 hc holder와 나머지는 남는다 | `HERDR_SESSION_MEM_MAX`, `HERDR_HEAVY_MEM_MAX` |
 | 시작 가드·디스크 가드 | 무거운 검사는 가용 메모리·부하가 기준을 넘을 때까지 기다린다. 디스크 여유가 모자라면 하네스 캐시를 지우고(`herdr-clean`), 그래도 모자라면 검사를 보류한다 | `HERDR_HEAVY_MIN_MEM_GB`, `HERDR_HEAVY_MAX_LOAD`, `HERDR_MIN_DISK_GB` |
-| 검증 도구 한도 | codex 쓴 비율이 기준 이상이면 대체 도구로 검증하고, 대체 도구가 없으면 횟수를 쓰지 않고 알린다 | `HERDR_VERIFIER_LIMIT_PCT`, `HERDR_VERIFIER_FALLBACK_*` |
+| 검증 도구 한도 | codex 명령이 없거나, 쓴 비율이 기준 이상이거나, 판정 없이 곧바로 끝나면(로그인·모델 거절 등, 시간 초과는 제외) 대체 도구로 검증한다. 대체 도구가 없으면 횟수를 쓰지 않고 알린다 | `HERDR_VERIFIER_LIMIT_PCT`, `HERDR_VERIFIER_FALLBACK_*` |
 
 ```bash
 .agents/bin/herdr-watch --status   # 감시자 상태와 최근 기록(~/.claude/herdr/handoff/<프로젝트>/watch.log)
@@ -285,7 +288,7 @@ bin/harness sync <프로젝트>
 | `--here`로 띄웠는데 화면이 멈춘 채 아무것도 안 나온다                    | `--bg` 없는 `hc run`으로 띄우던 이전 실행기다(끝날 때까지 기다렸다가 출력만 보여 준다). `bin/harness sync`로 갱신한 뒤 다시 띄운다. 이미 뜬 세션은 `hc attach <주소>`로 붙거나 `hc kill <주소>`로 끝낸다         |
 | `커밋 안 된 변경이 있어 [완료]를 보내지 않았다`                          | 워커가 커밋하지 않았거나 작업 트리 밖에서 보고했다. 작업한 worktree에서 커밋한 뒤 다시 보낸다                                                                                                                              |
 | `검사가 실패해 [완료]를 보내지 않았다`                                   | `HERDR_CHECK_CMD`가 실패했다. 전체 출력은 `~/.claude/herdr/handoff/<프로젝트>/.<role>.check.log`에 있다                                                                                                                |
-| 편집 hook이 돌지 않는다                                                    | `HERDR_CHECK_FILE_CMD`가 비었거나, 프로젝트의 `.claude/settings.json`·`.codex/hooks.json`에 hook이 없다. `sync`는 이 두 파일을 덮어쓰지 않으므로 `core/config/`의 내용을 직접 합친다                            |
+| 편집 hook이 돌지 않는다                                                    | `HERDR_CHECK_FILE_CMD`가 비었거나, 프로젝트의 `.claude/settings.json`·`.codex/hooks.json`에 hook이 없다. `init`·`sync`는 이 두 파일이 있으면 덮어쓰지 않고 빠진 하네스 hook만 덧붙인다. JSON으로 읽지 못하면 알리기만 하므로 `core/config/`의 내용을 직접 합친다 |
 | 보기 패널이 생기지 않는다                                                  | Commander를 `--here`로 herdr 패널에서 띄워야 기준 패널이 생긴다. 이전 실행기로 띄운 Commander는 기준이 없으니 `bin/harness sync` 뒤 다시 띄운다. 그 패널을 닫았어도 생기지 않는다. `HERDR_VIEW_PANES=1`인지 확인한다 |
 | 보기 패널의 화면이 겹치거나 줄이 엉켜 나온다                               | 보기 전용(`--observe`)으로 붙던 이전 실행기다. hc 세션은 200x120으로 그리는데 패널이 작아 깨진다. `bin/harness sync` 뒤 그 패널에서 `ctrl+\`로 떨어지고 `hc attach <주소>`로 다시 붙는다                           |
 | `Transcript saving is off — inherited CLAUDE_CODE_CHILD_SESSION marker` | hc 서버를 Claude Code 안에서 띄워 그 세션의 표지가 물려졌다. 실행기가 띄울 때 지우므로 `bin/harness sync` 뒤 새로 띄운 세션에는 없다. 이미 뜬 세션은 기록이 저장되지 않으니 작업 경계에서 다시 띄운다                    |

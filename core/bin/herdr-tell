@@ -23,7 +23,7 @@ latest() { # 역할 → 그 역할의 살아 있는 세션 중 가장 최근에 
   printf '%s' "$best"
 }
 target="$(latest "$to")"
-[[ -n "$target" ]] || { echo "$project의 $to 세션을 찾지 못했다. Orchestrator면 herdr-session으로 띄운다." >&2; exit 1; }
+[[ -n "$target" ]] || { echo "${project}의 $to 세션을 찾지 못했다. Orchestrator면 herdr-session으로 띄운다." >&2; exit 1; }
 from="${HERDR_ROLE:-commander}"
 hc send "$target" "$1 ($from $(date '+%Y-%m-%d %H:%M') 보냄)" >/dev/null || { echo "$target 에 보내지 못했다" >&2; exit 1; }
 echo "보냄: $to($target)"

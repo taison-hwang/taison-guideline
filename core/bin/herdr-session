@@ -89,7 +89,7 @@ KIND_UPPER="$(printf '%s' "$KIND" | tr '[:lower:]' '[:upper:]')"
 ENV_TOOL_VAR="HERDR_${KIND_UPPER}_TOOL" ENV_MODEL_VAR="HERDR_${KIND_UPPER}_MODEL" ENV_EFFORT_VAR="HERDR_${KIND_UPPER}_EFFORT"
 ENV_TOOL="${!ENV_TOOL_VAR:-}"
 if [[ -z "$TOOL" ]]; then
-  [[ -n "$ENV_TOOL" ]] || { echo "도구를 정하지 못했다. 인자로 codex|claude를 주거나 .agents/harness.env에 $ENV_TOOL_VAR를 둔다" >&2; exit 2; }
+  [[ -n "$ENV_TOOL" ]] || { echo "도구를 정하지 못했다. 인자로 codex|claude를 주거나 .agents/harness.env에 ${ENV_TOOL_VAR}를 둔다" >&2; exit 2; }
   TOOL="$ENV_TOOL"
 fi
 ENV_MODEL="" ENV_EFFORT=""
@@ -98,7 +98,7 @@ if [[ -n "$ENV_TOOL" && "$TOOL" == "$ENV_TOOL" ]]; then
 fi
 # harness.env에 적힌 모델·effort는 사용자가 정한 값이다. 띄우는 세션이 인자로 바꾸지 못한다.
 locked() { # 이름 설정값 인자 설정변수
-  echo "거부: .agents/harness.env가 $ROLE의 $1을 $2로 정했다(사용자 설정). 인자 $3을 받지 않는다." >&2
+  echo "거부: .agents/harness.env가 ${ROLE}의 $1을 $2로 정했다(사용자 설정). 인자 $3을 받지 않는다." >&2
   echo "인자 없이 다시 띄운다. 이 값을 바꾸는 것은 사용자다: harness.env의 $4를 고치거나 비운다." >&2
   exit 2
 }
@@ -169,7 +169,7 @@ WATCH="$BIN/herdr-watch"
 
 if [[ "$KIND" == orchestrator && $NO_COMMANDER -eq 0 && $DRY -eq 0 ]] && command -v hc >/dev/null; then
   if [[ "$(hc ls --json --label "project=$PROJECT" --label role=commander 2>/dev/null | jq '.terminals | length' 2>/dev/null || echo 0)" -eq 0 ]]; then
-    echo "거부: $PROJECT에 Commander(role=commander 라벨)가 없다. 이대로 띄우면 Orchestrator의 보고와 결정 요청이 사용자에게 닿지 않는다." >&2
+    echo "거부: ${PROJECT}에 Commander(role=commander 라벨)가 없다. 이대로 띄우면 Orchestrator의 보고와 결정 요청이 사용자에게 닿지 않는다." >&2
     echo "herdr 화면에서 패널을 열고 .agents/bin/herdr-session --here commander 로 Commander를 띄운 뒤, 그 Commander가 Orchestrator를 띄운다." >&2
     echo "실행기 밖에서 연 세션(그냥 연 claude·codex)은 라벨이 없어 Commander로 찾지 못한다. Commander 없이 띄우려면 --no-commander." >&2
     exit 2
