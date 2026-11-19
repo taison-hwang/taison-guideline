@@ -21,7 +21,8 @@
 # 영향·경량 검사만 거친 SHA의 [병합완료]는 바로 보내고, 기본 브랜치 HEAD의 전체 검사(전체 회귀)를 뒤에서 돌린다.
 # 병합 뒤 전체 검사는 프로젝트에 하나씩 차례로 돌고, 차례가 왔을 때 기본 브랜치 HEAD를 검사하므로 연달은 병합은 한 번에 덮는다.
 # 실패하면 Orchestrator에 "[진행] <작업> 병합 뒤 전체 검사 FAIL <SHA>"를 보낸다. 기록은 역할 merged에 남는다.
-# 독립 검증([배정]에 `독립 검증:` 항목이 있는 일반 작업): [완료]는 그 패치의 판정 PASS(herdr-verify)가 있어야 가고,
+# 독립 검증([배정]에 `독립 검증:` 항목이 있거나, 작업 worktree에서 기본 브랜치와 갈라진 뒤 문서(docs/*, *.md) 밖의 파일을
+# 바꾼 작업(HERDR_VERIFY_CODE=1, 기본). 경량 포함): [완료]는 그 패치의 판정 PASS(herdr-verify)가 있어야 가고,
 # "독립 검증 PASS <SHA> <기록>"을 붙인다. 판정이 없으면 --bg처럼 검사와 검증 서브에이전트를 함께 뒤에서 돌리고 둘 다 PASS면
 # [완료]를 보낸다. ISSUES·BLOCKED면 [완료]를 보내지 않고 이 세션에 [판정]을, Orchestrator에 [진행]을 보낸다.
 # 메인 체크아웃에서 보내는 워커의 [완료]는 커밋된 HEAD만 본다. 다른 세션의 변경이 섞여 있으므로 그 자리에서 검사하지 않고,
@@ -57,8 +58,8 @@ message="$1"
 dir="$HOME/.claude/herdr/handoff/$HERDR_PROJECT"
 mkdir -p "$dir"
 check="$BIN/herdr-check"
-HERDR_LIGHT_MAX_LINES=150 HERDR_LIGHT_DENY_PATHS="" HERDR_NOTIFY_TAGS="차단 완료"
-eval "$( [[ -f "$BIN/../harness.env" ]] && . "$BIN/../harness.env" >/dev/null 2>&1; declare -p HERDR_LIGHT_MAX_LINES HERDR_LIGHT_DENY_PATHS HERDR_NOTIFY_TAGS 2>/dev/null)"
+HERDR_LIGHT_MAX_LINES=150 HERDR_LIGHT_DENY_PATHS="" HERDR_NOTIFY_TAGS="차단 완료" HERDR_VERIFY_CODE=1
+eval "$( [[ -f "$BIN/../harness.env" ]] && . "$BIN/../harness.env" >/dev/null 2>&1; declare -p HERDR_LIGHT_MAX_LINES HERDR_LIGHT_DENY_PATHS HERDR_NOTIFY_TAGS HERDR_VERIFY_CODE 2>/dev/null)"
 
 send() { # 메시지. 보고 대상에게 보내고 보고 기록을 남긴다
   local message="$1" target parent tokens compacts meta tag task sha result
@@ -161,6 +162,16 @@ light_over() { # 기준 커밋. 경량 기준을 넘으면 이유를 출력한�
     done
   done < <(git diff --no-renames --name-only "$mb" HEAD)
   set +f
+}
+
+code_changed() { # 기준 커밋. 갈라진 뒤 문서 밖의 파일을 바꿨으면 참
+  # shortcut: docs/*와 *.md만 문서로 본다. 상태·지침 파일이 다른 경로에 있는 프로젝트가 생기면 경로를 harness.env 설정으로 뺀다
+  local mb f
+  mb="$(git merge-base "$1" HEAD)" || return 0
+  while IFS= read -r f; do
+    case "$f" in docs/* | *.md) ;; *) return 0 ;; esac
+  done < <(git diff --no-renames --name-only "$mb" HEAD)
+  return 1
 }
 
 predict() { # 지난 실제 검사(PASS) 시간으로 예상을 만든다
@@ -318,26 +329,36 @@ if [[ $gated -eq 1 ]]; then
     exit 0
   fi
   base=""; [[ $linked -eq 1 && "$message" == "[완료]"* ]] && base="$main_head"
+  need_verify="" light=""
+  if [[ "$message" == "[완료]"* ]]; then
+    if [[ "$(verify_of "$(task_of "$message")")" == 필요 ]]; then need_verify=1
+    elif [[ "$HERDR_VERIFY_CODE" == 1 && $linked -eq 1 ]] && code_changed "$main_head"; then need_verify=1; fi
+  fi
   if [[ "$grade" == 경량 && "$state" != PASS\ * && "$state" != UNSET ]]; then
     if [[ "$message" == "[완료]"* && $linked -eq 1 ]]; then
       over="$(light_over "$main_head")"
       if [[ -z "$over" ]]; then
         if [[ "$state" == LIGHT\ * ]]; then rc=0; else "$check" --light "$main_head"; rc=$?; fi
         case $rc in
-          0) send "$message · 가벼운 검사 PASS $target_sha(경량)" || exit 1; exit 0 ;;
-          3) send "$message · 가벼운 검사 미설정(경량, HERDR_CHECK_FILE_CMD 없음)" || exit 1; exit 0 ;;
+          0) light=" · 가벼운 검사 PASS $target_sha(경량)" ;;
+          3) light=" · 가벼운 검사 미설정(경량, HERDR_CHECK_FILE_CMD 없음)" ;;
           *) echo "경량 검사가 실패해 [완료]를 보내지 않았다. 고친 뒤 커밋하고 다시 보낸다." >&2; exit 1 ;;
         esac
+        [[ -n "$need_verify" ]] || { send "$message$light" || exit 1; exit 0; }
+      else
+        echo "경량 기준을 넘어 일반 관문(전체 검사)으로 보낸다: $over" >&2
+        message="$message · 경량 기준 초과($over)"
       fi
-      echo "경량 기준을 넘어 일반 관문(전체 검사)으로 보낸다: $over" >&2
-      message="$message · 경량 기준 초과($over)"
     fi
   fi
-  if [[ "$message" == "[완료]"* && "$grade" != 경량 && "$(verify_of "$(task_of "$message")")" == 필요 ]]; then
+  if [[ -n "$need_verify" ]]; then
     # 독립 검증: 이 패치의 판정 PASS가 있어야 보낸다. 없으면 검사와 함께 뒤에서 검증 서브에이전트를 돌린다
+    # shortcut: 판정 없는 경량은 뒤에서 가벼운 검사 대신 영향·전체 검사를 돈다. 경량이 잦아 느려지면 --bg-run에 경량 검사를 더한다
     vstate="$("$BIN/herdr-verify" --status --sha "$target_sha" "$(task_of "$message")" 2>/dev/null)"
     case "$vstate" in
-      PASS\ *) message="$message · $(verify_label "$vstate")" ;;
+      PASS\ *)
+        [[ -z "$light" ]] || { send "$message$light · $(verify_label "$vstate")" || exit 1; exit 0; }
+        message="$message · $(verify_label "$vstate")" ;;
       ISSUES\ * | BLOCKED\ *)
         echo "이 패치는 독립 검증 ${vstate%% *}였다(기록 ${vstate##* }). 고쳐 커밋한 뒤 다시 보낸다. 지적이 틀렸다고 보면 herdr-verify --focus로 근거를 넘기고, 실행할 수 없으면 [차단]으로 올린다." >&2
         exit 1 ;;

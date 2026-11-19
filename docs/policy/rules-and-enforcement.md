@@ -39,7 +39,8 @@
 | 완료는 실제 사용 경로에서 확인한 것이다. 대신 확인한 것과 결론 없는 확인은 미확인이다 | 문구(`implementing-with-tdd`의 "완료 근거", Orchestrator 4절), 독립 검증 | 작성자는 의도한 것을 확인하고, 단위 테스트 통과는 기능 동작을 보이지 않는다(시험 2에서 실사용 경로로만 결함 적발) | 판정 ISSUES 중 작성자가 실사용 경로를 확인했다고 보고한 비율을 본다 |
 | 최종 완료 전에 완료 조건을 기본 브랜치에서 확인하고 작업·세션·대기를 정산한다 | 문구(Orchestrator 8절) | 워커 보고의 합은 기본 브랜치의 상태가 아니다. 버리거나 흡수한 작업이 기록 없이 사라진다 | 완료 보고 뒤 사용자가 찾은 누락 수를 본다 |
 | 관문과 워커의 회귀 확인은 바꾼 코드와 그 의존 범위로 한정하고, 전체 회귀는 병합 뒤 기본 브랜치에서 한 번(연달은 병합을 덮어) 돈다 | `HERDR_CHECK_AFFECTED_CMD`·`herdr-check --affected`(끝 코드 4면 전체), `herdr-report`의 병합 뒤 검사(프로젝트에 하나씩, 실패를 Orchestrator에 알림), 문구(워커, Orchestrator 3절 검증 명령, `implementing-with-tdd`) | 셸 스크립트 하나를 더한 작업에도 전체 회귀(go test 3회, books 테스트, web 게이트, 작업당 15~20분)가 관문과 병합에서 거듭 돌았다(zip-viewer checks.tsv, 2026-11-09~10) | `herdr-flow`의 작업당 검사 시간과 병합 뒤 전체 검사 FAIL 수를 본다. FAIL이 잦으면 영향 검사 명령의 의존 범위를 넓힌다 |
-| 작업마다 등급(경량·일반)을 정하고, 경량은 바뀐 파일 검사만 하고 독립 검증·TDD·뮤테이션을 하지 않는다. 병합 뒤 전체 검사는 뒤에서 돈다 | `[배정]`의 `등급: 경량`을 hook이 기록, `herdr-report`·`herdr-check --light`(바뀐 줄 상한·금지 경로를 넘으면 전체 검사), 문구(Orchestrator 3절, 워커 "경량 작업", `implementing-with-tdd`) | 단순 래퍼 스크립트와 경로 이동에 전체 검사와 독립 검증을 거듭해 수 시간과 토큰을 썼다(zip-viewer U-R4·U-R5·U-R6, 2026-11-09~10, 사용자가 직접 축소 지시) | `herdr-flow`로 경량 작업의 배정→병합 시간과 병합 뒤 전체 검사 FAIL 수를 본다. FAIL이 잦으면 기준을 좁힌다 |
+| 코드·테스트를 바꾼 작업은 등급·`독립 검증:` 줄과 상관없이 독립 검증을 받는다. 연속 PASS로 면제하지 않는다 | `herdr-report`(작업 worktree가 기본 브랜치와 갈라진 뒤 `docs/*`·`*.md` 밖의 파일을 바꿨으면 판정 PASS 없이 `[완료]`를 보내지 않음, `HERDR_VERIFY_CODE=0`이면 끔) | 워커가 경량 코드 변경에 검증을 직접 돌리는 문구 규칙은 빠뜨리기 쉽다(jobtailor GUIDE-VERIFY, 2026-11-18 사용자 지시) | `herdr-flow`로 경량 작업의 배정→병합 시간을 보고, 검증 ISSUES가 경량에서 얼마나 나오는지 `verdicts.tsv`로 본다 |
+| 작업마다 등급(경량·일반)을 정하고, 경량은 바뀐 파일 검사만 하고 TDD·뮤테이션을 하지 않는다. 병합 뒤 전체 검사는 뒤에서 돈다 | `[배정]`의 `등급: 경량`을 hook이 기록, `herdr-report`·`herdr-check --light`(바뀐 줄 상한·금지 경로를 넘으면 전체 검사), 문구(Orchestrator 3절, 워커 "경량 작업", `implementing-with-tdd`) | 단순 래퍼 스크립트와 경로 이동에 전체 검사와 독립 검증을 거듭해 수 시간과 토큰을 썼다(zip-viewer U-R4·U-R5·U-R6, 2026-11-09~10, 사용자가 직접 축소 지시) | `herdr-flow`로 경량 작업의 배정→병합 시간과 병합 뒤 전체 검사 FAIL 수를 본다. FAIL이 잦으면 기준을 좁힌다 |
 | Orchestrator는 Commander가 있을 때만 띄운다. 보고가 Commander에 닿지 않으면 파일에 남기고 사용자에게 알린다 | 실행기(`herdr-session`)가 `role=commander` 없이는 거부(`--no-commander`는 감시자·시험용), `herdr-report`가 `pending-decisions.md`와 `herdr-notify`, Commander 시작 hook이 남은 보고를 먼저 전하게 함, 감시자가 다시 알림 | 실행기 밖에서 연 Commander는 라벨이 없어 결정 요청이 파일에만 쌓였고 27시간 멈췄다(ohmystock 2026-11-11~12, E1·E3) | `notify.log`와 `pending-decisions.md`에 남은 요청이 사용자 답까지 걸린 시간을 본다 |
 | 사용자가 화면 앞에 없어도 `[차단]`·`[완료]`를 안다 | `herdr-report`가 `HERDR_NOTIFY_TAGS`의 말머리를 `herdr-notify`로도 보냄 | Commander 화면의 질문은 사용자가 볼 때까지 기다린다 | 알림을 끄고 결정 대기 시간을 비교한다 |
 | 세션·무거운 검사·검증 서브에이전트는 각자 cgroup에서 돌고, 무거운 것에는 메모리 상한을 둔다 | `herdr-scope`(systemd 사용자 scope, `HERDR_HEAVY_MEM_MAX`·`HERDR_SESSION_MEM_MAX`), 템플릿의 시작 가드 기본값(`HERDR_HEAVY_MIN_MEM_GB=4`, `HERDR_HEAVY_MAX_LOAD=auto`) | 모든 세션과 검사가 hc holder 유닛 하나에 있어 systemd-oomd가 214개를 한꺼번에 죽였다(ohmystock 2026-11-12 02:54, 유닛 peak 25.8G, 가드 0) | `journalctl --user`의 oomd 기록이 holder 대신 한 scope를 고르는지, `holder_lost` 수를 본다 |
@@ -60,7 +61,7 @@
 - 기록: `docs/status/decisions.tsv`의 판정 줄, 핸드오프 폴더의 `verdicts.tsv`와 `verify/` 검증 기록(2026-11-10부터. 그 전은 `docs/progress/`의 검증 기록).
 - 2026-11-10부터 검증 세션 대신 워커가 띄우는 검증 서브에이전트로 바꿨다. 아래 시험 결과는 검증 세션 시기의 것이다.
 - 유지 조건: 검증이 사람이 병합 뒤 찾았을 결함을 막았다.
-- 축소 조건: 같은 유형의 묶음에서 첫 판정이 5번 연속 `PASS`다. `BLOCKED`는 세지 않는다. 5는 시작 값이며 근거가 있는 수치가 아니다.
+- 축소 조건: 없다. 2026-11-18 사용자 지시로 "같은 유형 5번 연속 `PASS`면 면제"를 지우고 코드 변경은 모두 검증한다. 프로젝트마다 끄려면 `HERDR_VERIFY_CODE=0`이다.
 
 ### 시험 결과 (2026-11-07)
 

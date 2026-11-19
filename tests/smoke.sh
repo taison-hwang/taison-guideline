@@ -37,11 +37,11 @@ check "오탐은 근거를 넘겨 다시 판정받음" "grep -qF 'herdr-verify -
 check "rebase로 패치가 바뀌면 병합 중단" "grep -q '첫 값이 다르면(충돌 해결, 코드 수정, 바로 옆 줄이 바뀐 경우) 병합하지 않는다' '$W_REF'"
 check "PASS 없이 병합 금지" "grep -qF '판정 \`PASS\` 없이 독립 검증 작업의 \`[병합]\`을 보내지 않는다' '$O_REF'"
 check "판정을 직접 뒤집지 않음" "grep -q '판정을 직접 뒤집지 않는다' '$O_REF'"
-check "BLOCKED는 축소 조건에서 제외" "grep -qF '\`BLOCKED\`는 세지 않는다' '$O_REF'"
 check "첫 묶음은 첫 [완료] 수용까지만 먼저" "grep -qF '첫 \`[완료]\`를 수용 기준과 대조해 받아들인 뒤 나머지 일반 코드 묶음을 배정한다' '$O_REF'"
 check "코드 안 바꾸는 작업은 처음부터 병행" "grep -q '코드를 바꾸지 않는 작업(조사, 스펙, 문서)과 경량 작업은 처음부터' '$O_REF'"
 check "첫 묶음 병합까지 기다리는 규칙 없음" "! grep -qE '병합까지 통과시킨다|첫 묶음이 병합까지 통과한 뒤' '$O_REF'"
 check "검사와 독립 검증은 함께 뒤에서" "grep -q '검사와 독립 검증은 \`herdr-report\`가 함께 뒤에서 돌린다' '$O_REF'"
+check "코드 변경 검증은 연속 PASS로 면제하지 않음" "! grep -q '5번 연속' '$O_REF' && grep -q '연속 PASS로 면제하지 않는다' '$O_REF'"
 check "ISSUES는 작성 세션이 직접 받음(보완 배정 없음)" "grep -q '작성 세션이 직접 받아 고친다' '$O_REF'"
 check "워커는 긴 검사 전에 커밋 SHA와 예상 시간을 알림" "grep -qF '[진행] <작업 ID> 커밋 <SHA> 검사 중 예상 <소요 시간>' '$W_REF'"
 check "사용자 결정은 그 단계만 막음" "grep -q '그 결정이 필요한 단계만 막는다' '$O_REF' && grep -q '그 결정이 필요한 단계만 막는다' '$P/.agents/skills/running-herdr-autopilot/SKILL.md'"
@@ -95,6 +95,8 @@ check "추가한 칸을 알림" "printf '%s' \"\$out\" | grep -q 'harness.env에
 check "더 쓰지 않는 설정은 알리기만 하고 지우지 않음" "printf '%s' \"\$out\" | grep -q '더 쓰지 않는 설정: HERDR_MAX_VERIFIERS' && grep -qx 'HERDR_MAX_VERIFIERS=1' '$E'"
 set_env '/^HERDR_MAX_VERIFIERS=/d' "$E"
 set_env 's/^HERDR_CHECK_TIMEOUT=.*/HERDR_CHECK_TIMEOUT=3600/' "$E"
+# 관문 시험은 검증자 없이 .txt를 바꾸므로 코드 변경 검증(HERDR_VERIFY_CODE)을 끄고, 독립 검증 절에서만 켠다
+set_env 's/^HERDR_VERIFY_CODE=.*/HERDR_VERIFY_CODE=0/' "$E"
 
 echo "== 기존 프로젝트 보호"
 Q="$WORK/existing"; mkdir -p "$Q/.agents/skills/writing-project-docs"; echo mine >"$Q/.agents/skills/writing-project-docs/SKILL.md"
@@ -624,6 +626,24 @@ echo c2 >>c.txt; vcommit fix; v3b="$(git rev-parse HEAD)"; echo PASS >"$V/verdic
 "$R" --bg "[완료] V-03 고침" >/dev/null 2>&1; wait_for "\\[완료\\] V-03 고침" "$WORK/hc.log"
 check "고친 커밋은 앞 기록을 받아 지적 항목과 고친 부분만 다시 봄" "grep -q '\\[다시 검증\\] 같은 작업의 앞 판정은 ISSUES' '$V/prompt.last' && grep -qF 'git diff $v3 $v3b' '$V/prompt.last' && grep -q '판정: ISSUES' '$V/prompt.last'"
 check "다시 받은 PASS로 [완료]" "grep -q \"send t9 \\[완료\\] V-03 고침 · 검사 PASS $v3b · 독립 검증 PASS ${v3b:0:12}\" '$WORK/hc.log'"
+# HERDR_VERIFY_CODE=1: 줄 없는 경량이라도 코드를 바꾸면 판정을 받고, 문서만 바꾸면 검증하지 않는다
+set_env 's/^HERDR_VERIFY_CODE=.*/HERDR_VERIFY_CODE=1/' "$P/.agents/harness.env"
+lassign() { printf '{"prompt":"<hc from=\\"t1\\">[배정] %s 등급: 경량 — 문구\\n수용 기준: 문구가 바뀐다"}' "$1" | "$TURN" start; }
+git -C "$VG" worktree add -q "$V/v10" -b v10 main; lassign V-10; cd "$V/v10"
+echo k >k.txt; vcommit k; v10="$(git rev-parse HEAD)"; : >"$WORK/hc.log"
+"$R" "[완료] V-10 x" >/dev/null 2>&1
+check "줄 없는 경량이라도 코드를 바꾸면 판정 없이 [완료]를 보내지 않음" "grep -q \"send t9 \\[진행\\] V-10 커밋 ${v10:0:12} 검사·독립 검증 중(뒤에서)\" '$WORK/hc.log' && ! grep -q 'send t9 \\[완료\\] V-10' '$WORK/hc.log'"
+wait_for "\\[완료\\] V-10 x" "$WORK/hc.log"
+check "뒤에서 받은 판정을 붙여 [완료]를 보냄" "grep -q \"send t9 \\[완료\\] V-10 x · .*독립 검증 PASS ${v10:0:12}\" '$WORK/hc.log'"
+git -C "$VG" worktree add -q "$V/v11" -b v11 main; lassign V-11; cd "$V/v11"
+echo l >l.txt; vcommit l; v11="$(git rev-parse HEAD)"; "$VF" V-11 >/dev/null 2>&1; : >"$WORK/hc.log"
+"$R" "[완료] V-11 x" >/dev/null 2>&1
+check "판정을 미리 받은 경량은 가벼운 검사와 판정을 붙여 곧바로 보냄" "grep -q \"send t9 \\[완료\\] V-11 x · 가벼운 검사 .*경량.* · 독립 검증 PASS ${v11:0:12}\" '$WORK/hc.log'"
+git -C "$VG" worktree add -q "$V/v12" -b v12 main; lassign V-12; cd "$V/v12"
+mkdir -p docs; echo n >docs/n.md; vcommit doc; n0="$(wc -l <"$V/agent.log")"; : >"$WORK/hc.log"
+"$R" "[완료] V-12 x" >/dev/null 2>&1
+check "문서만 바꾼 경량은 검증 없이 곧바로 보냄" "grep -q 'send t9 \\[완료\\] V-12 x · 가벼운 검사' '$WORK/hc.log' && ! grep -q '독립 검증' '$WORK/hc.log' && [ \"\$(wc -l <'$V/agent.log')\" -eq $n0 ]"
+set_env 's/^HERDR_VERIFY_CODE=.*/HERDR_VERIFY_CODE=0/' "$P/.agents/harness.env"; cd "$V/v3"
 set_env 's/^HERDR_VERIFY_MAX_ROUNDS=.*/HERDR_VERIFY_MAX_ROUNDS=2/' "$P/.agents/harness.env"
 n0="$(wc -l <"$V/agent.log")"; echo c3 >>c.txt; vcommit more; out="$("$VF" V-03 2>&1)"; rc=$?
 check "같은 [배정]의 검증 횟수를 넘으면 거부하고 [차단]을 안내" "[ $rc -eq 5 ] && printf '%s' \"\$out\" | grep -q '검증 횟수 초과(2/2)' && printf '%s' \"\$out\" | grep -q '\\[차단\\]' && [ \"\$(wc -l <'$V/agent.log')\" -eq $n0 ]"
