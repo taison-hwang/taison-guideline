@@ -777,6 +777,12 @@ printf '{"prompt":"[배정] B-02 — 저장\\n수용 기준: 다시 읽힌다\\n
 printf '{"prompt":"[배정] B-03 — 저장\\n독립 검증: 없음"}' | HERDR_ROLE=worker-7 HERDR_PROJECT=demo "$TURN" start
 check "[배정]의 독립 검증 요구를 기록(없음이면 기록 안 함)" "awk -F'\t' '\$6==\"B-02\" && \$8==\"필요\"' '$D/received.tsv' | grep -q . && awk -F'\t' '\$6==\"B-03\" && \$8==\"\"' '$D/received.tsv' | grep -q . && awk -F'\t' '\$6==\"B-01\" && \$5==\"배정\" && \$8==\"\"' '$D/received.tsv' | grep -q ."
 check "[배정] 원문을 검증 서브에이전트용으로 남김" "grep -q '수용 기준: 다시 읽힌다' '$D/assign/worker-7/B-02.txt'"
+# 긴 한글 원문(20000바이트 초과)도 끝의 독립 검증 항목까지 저장하고 verify=필요로 기록한다
+long="$(python3 -c 'print("가나다라마바사 "*1800)')"
+jq -nc --arg p "[배정] B-04 — 긴 원문
+$long
+독립 검증: 끝 항목 ZZ-LAST" '{prompt:$p}' | HERDR_ROLE=worker-7 HERDR_PROJECT=demo "$TURN" start
+check "긴 [배정] 원문(>20000바이트)도 끝 항목까지 전부 저장" "[ \$(wc -c <'$D/assign/worker-7/B-04.txt') -gt 22000 ] && tail -n 1 '$D/assign/worker-7/B-04.txt' | grep -q 'ZZ-LAST' && awk -F'\t' '\$6==\"B-04\" && \$8==\"필요\"' '$D/received.tsv' | grep -q ."
 
 echo "== 보고 대상이 둘일 때"
 mkdir -p "$WORK/stub3"

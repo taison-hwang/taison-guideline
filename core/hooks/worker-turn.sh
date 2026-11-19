@@ -19,7 +19,8 @@ reported_file="$dir/.$HERDR_ROLE.reported"
 case "${1:-}" in
   start)
     mkdir -p "$dir" && date +%s >"$start_file"
-    full="$(printf '%s' "$input" | jq -r '.prompt // ""' | head -c 20000)"
+    # 원문을 자르지 않는다. 길이 상한(head -c)을 두면 뒤쪽 독립 검증 항목이 잘려 검증이 그 항목을 놓친다(ohmystock AU-14, 22161바이트)
+    full="$(printf '%s' "$input" | jq -r '.prompt // ""')"
     prompt="$(printf '%s' "$full" | head -c 2000)"
     if [[ "$prompt" =~ \[(배정|병합)\][[:space:]]+([^[:space:]]+) ]]; then
       tag="${BASH_REMATCH[1]}"
