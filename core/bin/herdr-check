@@ -8,7 +8,8 @@
 #                              영향을 받는 검사만 돌리고 AFFECTED로 기록한다. 명령이 없거나 끝 코드 4(범위를 정할 수 없음)면 전체 검사를 돈다
 #   herdr-check --light <기준>  경량 작업의 관문: 바뀐 파일에 빠른 파일 검사(HERDR_CHECK_FILE_CMD)만 돌리고 LIGHT로 기록한다
 #                              --affected·--light는 커밋된 상태에서만 돈다. 전체 회귀는 병합 뒤 기본 브랜치에서 돈다(herdr-report)
-# 끝 코드: 0 통과, 1 실패, 3 검사 명령 미설정, 5 디스크 여유 부족(검사를 돌리지 않음). 기록은 HEAD SHA와 커밋 안 된 변경 유무에 묶인다.
+# 끝 코드: 0 통과, 1 실패, 3 검사 명령 미설정, 5 디스크 여유 부족(검사를 돌리지 않음),
+# 7 대기열에서 빠지거나(herdr-queue drop) 뒤 커밋의 검사가 거둠(실패가 아니다 — checks.tsv 에 DROPPED·SUPERSEDED). 기록은 HEAD SHA와 커밋 안 된 변경 유무에 묶인다.
 # --status-of는 이 역할의 기록에 없으면 같은 프로젝트의 다른 역할 기록(병합 뒤 검사 merged 포함)에서 찾는다.
 # 전체 검사 = 가벼운 단계(HERDR_CHECK_CMD, 잠금 없음) 다음 무거운 단계(HERDR_CHECK_HEAVY_CMD, 공용 대기열 herdr-queue 아래).
 # 시간 제한(HERDR_CHECK_TIMEOUT)은 두 단계의 실행 시간 합에만 건다. 대기열에서 기다린 시간은 세지 않는다.
@@ -223,10 +224,17 @@ if [[ $rc -eq 0 && -n "$HERDR_CHECK_HEAVY_CMD" ]]; then
   ((left > 0)) || left=1
   echo "무거운 검사: $HERDR_CHECK_HEAVY_CMD (공용 대기열, 순서는 herdr-queue로 본다)" >&2
   wait_file="$(mktemp)"
-  "$(dirname "${BASH_SOURCE[0]}")/herdr-queue" run --project "$project" --role "$role" --sha "$key" \
+  sup=(); [[ $role == merged ]] && sup=(--supersede) # 병합 뒤 기본 브랜치 전체 검사: 이 커밋이 품는 앞 커밋의 검사를 거둔다
+  "$(dirname "${BASH_SOURCE[0]}")/herdr-queue" run --project "$project" --role "$role" --sha "$key" ${sup[@]+"${sup[@]}"} \
     --timeout "$left" --log "$log" --wait-file "$wait_file" -- bash -c "$HERDR_CHECK_HEAVY_CMD"; rc=$?
   queued="$(cat "$wait_file" 2>/dev/null)"; queued="${queued:-0}"
   rm -f "$wait_file"
+  if [[ $rc -eq 75 || $rc -eq 76 ]]; then # 빠지거나 거둔 검사는 실패로 기록하지 않는다
+    gone=DROPPED; [[ $rc -eq 76 ]] && gone=SUPERSEDED
+    log_check "$gone" "$key" "$(($(date +%s) - started - queued))" "$queued"
+    echo "검사 $gone ${key:0:12} (대기열 끝 코드 $rc — 실패 아님)" >&2
+    exit 7
+  fi
 fi
 if [[ $rc -eq 0 ]]; then status=PASS; else status=FAIL; fi
 record_add "$status" "$key"

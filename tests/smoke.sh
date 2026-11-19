@@ -6,7 +6,7 @@ set -uo pipefail
 export HERDR_SCOPE=0 HERDR_NOTIFY=0 HERDR_WATCH=0
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$(mktemp -d)"
-trap '[ -n "${KEEP:-}" ] || rm -rf "$WORK"' EXIT
+trap 'pkill -f "$WORK/demo/.agents/bin/herdr-watch" 2>/dev/null; [ -n "${KEEP:-}" ] || rm -rf "$WORK"' EXIT # 시험이 띄운 감시자 루프도 끈다
 pass=0 fail=0
 ok() { pass=$((pass + 1)); }
 no() { fail=$((fail + 1)); echo "실패: $1"; }
@@ -65,7 +65,12 @@ check "장부에 다음 예약 칸" "grep -q '| 다음 예약 |' '$O_REF'"
 check "첫 완료만으로 정리하지 않음" "grep -q '첫 \`\[완료\]\`만으로는 정리하지 않는다' '$C_REF'"
 check "CLEAR 요청의 두 경로" "grep -q '소프트 신호에 따른 자기 정리 요청' '$P/.agents/skills/running-herdr-autopilot/SKILL.md'"
 check "검증 세션은 띄우지 않음" "! '$P/.agents/bin/herdr-session' --dry-run verifier-1 codex >/dev/null 2>&1 && { '$P/.agents/bin/herdr-session' --dry-run verifier-1 codex 2>&1 || true; } | grep -q 'herdr-verify'"
-check "Commander 기본값은 claude sonnet medium" "grep -qx 'HERDR_COMMANDER_TOOL=claude' '$P/.agents/harness.env' && '$P/.agents/bin/herdr-session' --dry-run commander | grep -q 'claude .*--model sonnet --effort medium'"
+check "Commander 기본값은 codex gpt-6.1-sol high" "grep -qx 'HERDR_COMMANDER_TOOL=codex' '$P/.agents/harness.env' && '$P/.agents/bin/herdr-session' --dry-run commander | grep -q 'codex .*-m gpt-6.1-sol .*effort=\"high\"'"
+check "Orchestrator 기본값은 claude fable high" "'$P/.agents/bin/herdr-session' --dry-run --no-commander orchestrator | grep -q 'claude .*--model fable --effort high'"
+check "워커 기본값은 claude opus medium" "'$P/.agents/bin/herdr-session' --dry-run worker-1 | grep -q 'claude .*--model opus --effort medium'"
+check "검증 기본값은 codex gpt-6.2-astra high, 대체는 claude fable high" "grep -qx 'HERDR_VERIFIER_TOOL=codex' '$P/.agents/harness.env' && grep -qx 'HERDR_VERIFIER_MODEL=gpt-6.2-astra' '$P/.agents/harness.env' && grep -qx 'HERDR_VERIFIER_EFFORT=high' '$P/.agents/harness.env' && grep -qx 'HERDR_VERIFIER_FALLBACK_TOOL=claude' '$P/.agents/harness.env' && grep -qx 'HERDR_VERIFIER_FALLBACK_MODEL=fable' '$P/.agents/harness.env' && grep -qx 'HERDR_VERIFIER_FALLBACK_EFFORT=high' '$P/.agents/harness.env'"
+# 아래 시험은 역할 설정이 빈 상태에서 시작한다
+set_env 's/^\(HERDR_[A-Z_]*_TOOL\)=.*/\1=/; s/^\(HERDR_[A-Z_]*_MODEL\)=.*/\1=/; s/^\(HERDR_[A-Z_]*_EFFORT\)=.*/\1=/' "$P/.agents/harness.env"
 check "worktree ignore" "grep -qxF '/docs/.worktrees/' '$P/.gitignore'"
 check "graft 파일 ignore" "grep -qxF /graft/ '$P/.gitignore' && grep -qxF /.ignore '$P/.gitignore'"
 check "설정 JSON" "jq -e .hooks.PreCompact '$P/.claude/settings.json' >/dev/null && jq -e .hooks.SessionStart '$P/.codex/hooks.json' >/dev/null"
@@ -97,6 +102,36 @@ set_env '/^HERDR_MAX_VERIFIERS=/d' "$E"
 set_env 's/^HERDR_CHECK_TIMEOUT=.*/HERDR_CHECK_TIMEOUT=3600/' "$E"
 # 관문 시험은 검증자 없이 .txt를 바꾸므로 코드 변경 검증(HERDR_VERIFY_CODE)을 끄고, 독립 검증 절에서만 켠다
 set_env 's/^HERDR_VERIFY_CODE=.*/HERDR_VERIFY_CODE=0/' "$E"
+
+echo "== 이미 있는 hook 설정에는 빠진 hook만 합침"
+R="$WORK/has-settings"; mkdir -p "$R/.claude" "$R/.codex"
+printf '%s' '{"permissions":{"deny":["Read(.env)"]},"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"mine.sh"}]}],"PostToolUse":[{"matcher":"Edit|Write|MultiEdit|NotebookEdit","hooks":[{"type":"command","command":"[ -z \"${HERDR_ROLE:-}\" ] || exec \"$CLAUDE_PROJECT_DIR\"/.agents/hooks/check-edit.sh"}]}]}}' >"$R/.claude/settings.json"
+echo '{bad' >"$R/.codex/hooks.json"
+out="$("$ROOT/bin/harness" init "$R")"
+cmds() { jq -r '[.hooks[][].hooks[].command] | .[]' "$1"; }
+check "hook 합침: 하네스 hook이 모두 들어감" "[ \"\$(cmds '$R/.claude/settings.json' | grep -c '.agents/hooks/')\" = \"\$(cmds '$ROOT/core/config/claude-settings.json' | wc -l | tr -d ' ')\" ]"
+check "hook 합침: 프로젝트 설정·hook 유지" "jq -e '.permissions.deny[0] == \"Read(.env)\"' '$R/.claude/settings.json' >/dev/null && cmds '$R/.claude/settings.json' | grep -qx mine.sh"
+check "hook 합침: 감싼 명령은 이미 있는 것으로 봄" "[ \"\$(cmds '$R/.claude/settings.json' | grep -c 'check-edit.sh')\" = 1 ]"
+cp "$R/.claude/settings.json" "$WORK/settings.before"
+"$ROOT/bin/harness" sync "$R" >/dev/null
+check "hook 합침: 다시 sync해도 그대로" "cmp -s '$WORK/settings.before' '$R/.claude/settings.json'"
+check "hook 합침: JSON이 아니면 건드리지 않고 알림" "grep -qx '{bad' '$R/.codex/hooks.json' && printf '%s' \"\$out\" | grep -q 'codex/hooks.json를 JSON으로 읽지 못해'"
+
+echo "== 잠금(flock 없이 mkdir)"
+. "$ROOT/core/bin/herdr-lock.sh"
+L="$WORK/lk"
+check "잠금: 쥐면 다른 프로세스는 try 실패" "herdr_lock '$L' && ! bash -c '. \"$ROOT/core/bin/herdr-lock.sh\"; herdr_lock \"$L\" try' 2>/dev/null"
+check "잠금: 쥔 프로세스가 살아 있으면 busy" "bash -c '. \"$ROOT/core/bin/herdr-lock.sh\"; herdr_lock_busy \"$L\"'"
+check "잠금: 남의 잠금은 풀지 않음" "bash -c '. \"$ROOT/core/bin/herdr-lock.sh\"; herdr_unlock \"$L\"' && [ -d '$L.lockd' ]"
+herdr_unlock "$L"
+check "잠금: 자기 잠금은 풂" "[ ! -e '$L.lockd' ]"
+mkdir "$L.lockd"; echo 999999 >"$L.lockd/pid"
+check "잠금: 죽은 프로세스의 잠금은 걷고 쥠" "herdr_lock '$L' try 2>/dev/null && [ \"\$(cat '$L.lockd/pid')\" = $$ ]"
+herdr_unlock "$L"
+check "flock에 기대는 잠금 없음" "! grep -n 'flock [-0-9]' '$ROOT'/core/bin/* '$ROOT'/core/hooks/*"
+
+echo "== 변수 이름 뒤에 한글이 붙지 않음(bash 3.2·UTF-8에서 변수 이름으로 읽힌다)"
+check "\$이름한글 꼴 없음" "! LC_ALL=en_US.UTF-8 grep -nE '\\\$[A-Za-z_][A-Za-z0-9_]*[가-힣]' '$ROOT'/core/bin/* '$ROOT'/core/hooks/* '$ROOT/bin/harness'"
 
 echo "== 기존 프로젝트 보호"
 Q="$WORK/existing"; mkdir -p "$Q/.agents/skills/writing-project-docs"; echo mine >"$Q/.agents/skills/writing-project-docs/SKILL.md"
@@ -424,14 +459,15 @@ check "예약한 역할의 다음 검사는 맨 앞에 섬" "[ \"\$(tr '\n' ' ' 
 check "예약은 한 번 쓰면 없어짐" "! '$Q' | grep -q '급함 예약'"
 mkdir -p "$HERDR_HEAVY_DIR/tickets"
 printf '{"id":"dead","project":"x","role":"r","sha":"","pid":999999,"prio":5,"created":1,"state":"run","started":1}' >"$HERDR_HEAVY_DIR/tickets/dead.json"
-check "죽은 프로세스의 자리는 치움" "timeout 10 '$Q' run --role c -- true 2>/dev/null && [ ! -e '$HERDR_HEAVY_DIR/tickets/dead.json' ]"
+TO10=""; command -v timeout >/dev/null && TO10="timeout 10" # 기본 macOS에는 timeout이 없다
+check "죽은 프로세스의 자리는 치움" "$TO10 '$Q' run --role c -- true 2>/dev/null && [ ! -e '$HERDR_HEAVY_DIR/tickets/dead.json' ]"
 rm -f "$HERDR_HEAVY_DIR/tickets/dead.json" # 위가 실패해도 뒤 검사가 멈추지 않게
 "$Q" run --role h -- sleep 2 & sleep 0.3
 check "시간 제한은 실행 시간에만(대기는 세지 않음)" "'$Q' run --role t --timeout 1 --wait-file '$WORK/qw' -- sleep 0.2 2>/dev/null && [ \"\$(cat '$WORK/qw')\" -ge 1 ]"
 wait
 "$Q" run --role k --timeout 1 -- bash -c "sleep 30 & echo \$! >'$WORK/qk.pid'; wait" 2>"$WORK/qk.err"; rc=$?
 check "시간 초과면 124와 함께 프로세스 묶음째 끝냄" "[ $rc -eq 124 ] && sleep 0.5 && ! kill -0 \$(cat '$WORK/qk.pid') 2>/dev/null && grep -q '대기 시간은 세지 않았다' '$WORK/qk.err'"
-HERDR_HEAVY_MAX_LOAD=0.0001 "$Q" run --role g -- true 2>"$WORK/qg.err" & gpid=$!
+HERDR_HEAVY_FORCE_MAX_LOAD=0.0001 "$Q" run --role g -- true 2>"$WORK/qg.err" & gpid=$!
 wait_for '시작을 미룬다' "$WORK/qg.err"
 check "시작 가드를 넘지 못하면 자리를 쥐고 기다림" "grep -q '1분 부하' '$WORK/qg.err' && '$Q' | grep -qE '실행 +demo/g'"
 kill "$gpid"; wait "$gpid" 2>/dev/null
@@ -462,7 +498,7 @@ fcommit_wt() { git add -A && git -c user.email=t@t -c user.name=t commit -q -m "
 echo s0 >s0.txt; fcommit_wt s0; "$R" --bg "[완료] S-00 x" >/dev/null 2>&1; wait_for "S-00 x · 검사 PASS" "$WORK/hc.log"
 echo s1 >s1.txt; fcommit_wt s1; s1="$(git rev-parse HEAD)"
 # 검사용 worktree를 다시 쓸 때도 보고한 SHA를 검사하는지 보려고, 뒤 검사가 시작하기 전에 위 커밋을 쌓는다
-(flock 9; sleep 1.5) 9>"$XDG_CACHE_HOME/herdr/check/demo/worker-9.lock" & sleep 0.2
+(. "$ROOT/core/bin/herdr-lock.sh"; herdr_lock "$XDG_CACHE_HOME/herdr/check/demo/worker-9"; sleep 1.5; herdr_unlock "$XDG_CACHE_HOME/herdr/check/demo/worker-9") & sleep 0.2
 : >"$WORK/hc.log"; out="$("$R" --bg "[완료] S-01 x" 2>&1)"
 check "--bg는 곧바로 [진행]과 예상 시간을 보냄" "grep -q \"send t9 \\[진행\\] S-01 커밋 ${s1:0:12} 검사 중(뒤에서) 예상 최대 .*대기열\" '$WORK/hc.log' && printf '%s' \"\$out\" | grep -q '뒤에서 돌린다'"
 touch fail.flag; fcommit_wt s2-stacked; s2="$(git rev-parse HEAD)"
@@ -476,7 +512,7 @@ check "--bg는 [완료]에만" "! '$R' --bg '[진행] S-03 x' >/dev/null 2>&1"
 git rm -q fail.flag; fcommit_wt s3; "$P/.agents/bin/herdr-check" >/dev/null 2>&1; : >"$WORK/hc.log"
 check "이미 통과한 SHA면 --bg도 바로 [완료]" "'$R' --bg '[완료] S-03 x' >/dev/null 2>&1 && grep -q '\\[완료\\] S-03 x · 검사 PASS' '$WORK/hc.log' && ! grep -q '\\[진행\\] S-03' '$WORK/hc.log'"
 echo s4 >s4.txt; fcommit_wt s4
-(flock 9; sleep 1.5) 9>"$XDG_CACHE_HOME/herdr/check/demo/worker-9.lock" & sleep 0.2
+(. "$ROOT/core/bin/herdr-lock.sh"; herdr_lock "$XDG_CACHE_HOME/herdr/check/demo/worker-9"; sleep 1.5; herdr_unlock "$XDG_CACHE_HOME/herdr/check/demo/worker-9") & sleep 0.2
 "$R" --bg "[완료] S-04 x" >/dev/null 2>&1; sleep_until_next_second; echo '{}' | "$P/.agents/hooks/worker-turn.sh" start
 wait_for "S-04 x · 검사 PASS" "$WORK/hc.log"
 check "뒤 검사의 자동 보고는 그사이 시작한 턴의 보고로 세지 않음" "echo '{}' | '$P/.agents/hooks/worker-turn.sh' stop | jq -e '.decision == \"block\"' >/dev/null"
@@ -586,7 +622,7 @@ pwd >>"$V/agent.pwd"
 env | grep -E '^(HERDR_ROLE|HC_TERMINAL_ID|CLAUDECODE)=' >>"$V/agent.env"
 cat >"$V/prompt.last"
 v="\$(cat "$V/verdict.next" 2>/dev/null || echo PASS)"
-[ "\$v" = SLOW ] && { sleep 30; v=PASS; }
+[ "\$v" = SLOW ] && { sleep 3; v=PASS; }
 [ "\$v" = SILENT ] && exit 0
 printf '판정: %s\n\n- 항목 결과\n' "\$v" >"\$HERDR_VERIFY_RECORD"
 AGENT
@@ -629,20 +665,20 @@ check "다시 받은 PASS로 [완료]" "grep -q \"send t9 \\[완료\\] V-03 고�
 # HERDR_VERIFY_CODE=1: 줄 없는 경량이라도 코드를 바꾸면 판정을 받고, 문서만 바꾸면 검증하지 않는다
 set_env 's/^HERDR_VERIFY_CODE=.*/HERDR_VERIFY_CODE=1/' "$P/.agents/harness.env"
 lassign() { printf '{"prompt":"<hc from=\\"t1\\">[배정] %s 등급: 경량 — 문구\\n수용 기준: 문구가 바뀐다"}' "$1" | "$TURN" start; }
-git -C "$VG" worktree add -q "$V/v10" -b v10 main; lassign V-10; cd "$V/v10"
-echo k >k.txt; vcommit k; v10="$(git rev-parse HEAD)"; : >"$WORK/hc.log"
-"$R" "[완료] V-10 x" >/dev/null 2>&1
-check "줄 없는 경량이라도 코드를 바꾸면 판정 없이 [완료]를 보내지 않음" "grep -q \"send t9 \\[진행\\] V-10 커밋 ${v10:0:12} 검사·독립 검증 중(뒤에서)\" '$WORK/hc.log' && ! grep -q 'send t9 \\[완료\\] V-10' '$WORK/hc.log'"
-wait_for "\\[완료\\] V-10 x" "$WORK/hc.log"
-check "뒤에서 받은 판정을 붙여 [완료]를 보냄" "grep -q \"send t9 \\[완료\\] V-10 x · .*독립 검증 PASS ${v10:0:12}\" '$WORK/hc.log'"
-git -C "$VG" worktree add -q "$V/v11" -b v11 main; lassign V-11; cd "$V/v11"
-echo l >l.txt; vcommit l; v11="$(git rev-parse HEAD)"; "$VF" V-11 >/dev/null 2>&1; : >"$WORK/hc.log"
-"$R" "[완료] V-11 x" >/dev/null 2>&1
-check "판정을 미리 받은 경량은 가벼운 검사와 판정을 붙여 곧바로 보냄" "grep -q \"send t9 \\[완료\\] V-11 x · 가벼운 검사 .*경량.* · 독립 검증 PASS ${v11:0:12}\" '$WORK/hc.log'"
-git -C "$VG" worktree add -q "$V/v12" -b v12 main; lassign V-12; cd "$V/v12"
+git -C "$VG" worktree add -q "$V/v20" -b v20 main; lassign V-20; cd "$V/v20"
+echo k >k.txt; vcommit k; v20="$(git rev-parse HEAD)"; : >"$WORK/hc.log"
+"$R" "[완료] V-20 x" >/dev/null 2>&1
+check "줄 없는 경량이라도 코드를 바꾸면 판정 없이 [완료]를 보내지 않음" "grep -q \"send t9 \\[진행\\] V-20 커밋 ${v20:0:12} 검사·독립 검증 중(뒤에서)\" '$WORK/hc.log' && ! grep -q 'send t9 \\[완료\\] V-20' '$WORK/hc.log'"
+wait_for "\\[완료\\] V-20 x" "$WORK/hc.log"
+check "뒤에서 받은 판정을 붙여 [완료]를 보냄" "grep -q \"send t9 \\[완료\\] V-20 x · .*독립 검증 PASS ${v20:0:12}\" '$WORK/hc.log'"
+git -C "$VG" worktree add -q "$V/v21" -b v21 main; lassign V-21; cd "$V/v21"
+echo l >l.txt; vcommit l; v21="$(git rev-parse HEAD)"; "$VF" V-21 >/dev/null 2>&1; : >"$WORK/hc.log"
+"$R" "[완료] V-21 x" >/dev/null 2>&1
+check "판정을 미리 받은 경량은 가벼운 검사와 판정을 붙여 곧바로 보냄" "grep -q \"send t9 \\[완료\\] V-21 x · 가벼운 검사 .*경량.* · 독립 검증 PASS ${v21:0:12}\" '$WORK/hc.log'"
+git -C "$VG" worktree add -q "$V/v22" -b v22 main; lassign V-22; cd "$V/v22"
 mkdir -p docs; echo n >docs/n.md; vcommit doc; n0="$(wc -l <"$V/agent.log")"; : >"$WORK/hc.log"
-"$R" "[완료] V-12 x" >/dev/null 2>&1
-check "문서만 바꾼 경량은 검증 없이 곧바로 보냄" "grep -q 'send t9 \\[완료\\] V-12 x · 가벼운 검사' '$WORK/hc.log' && ! grep -q '독립 검증' '$WORK/hc.log' && [ \"\$(wc -l <'$V/agent.log')\" -eq $n0 ]"
+"$R" "[완료] V-22 x" >/dev/null 2>&1
+check "문서만 바꾼 경량은 검증 없이 곧바로 보냄" "grep -q 'send t9 \\[완료\\] V-22 x · 가벼운 검사' '$WORK/hc.log' && ! grep -q '독립 검증' '$WORK/hc.log' && [ \"\$(wc -l <'$V/agent.log')\" -eq $n0 ]"
 set_env 's/^HERDR_VERIFY_CODE=.*/HERDR_VERIFY_CODE=0/' "$P/.agents/harness.env"; cd "$V/v3"
 set_env 's/^HERDR_VERIFY_MAX_ROUNDS=.*/HERDR_VERIFY_MAX_ROUNDS=2/' "$P/.agents/harness.env"
 n0="$(wc -l <"$V/agent.log")"; echo c3 >>c.txt; vcommit more; out="$("$VF" V-03 2>&1)"; rc=$?
@@ -650,11 +686,12 @@ check "같은 [배정]의 검증 횟수를 넘으면 거부하고 [차단]을 �
 sleep_until_next_second; assign V-03 "$V/v3"; out="$("$VF" V-03 2>&1)"; rc=$?
 check "새 [배정]은 횟수를 새로 셈" "[ $rc -eq 0 ]"
 set_env 's/^HERDR_VERIFY_MAX_ROUNDS=.*/HERDR_VERIFY_MAX_ROUNDS=3/' "$P/.agents/harness.env"
-# 검사가 실패하면 도는 검증을 취소한다
+# 검사가 실패해도 검증은 끝까지 돌려 판정을 남기고 작성 세션에만 알린다
 git -C "$VG" worktree add -q "$V/v4" -b v4 main; assign V-04 "$V/v4"; cd "$V/v4"
 touch broken.txt; vcommit broken; echo SLOW >"$V/verdict.next"; : >"$WORK/hc.log"
 "$R" --bg "[완료] V-04 x" >/dev/null 2>&1; wait_for "V-04 커밋 .* 검사 FAIL" "$WORK/hc.log"; sleep 1
-check "검사 FAIL이면 검증 서브에이전트를 취소" "! pgrep -f '$V/bin/codex' >/dev/null && ! awk -F'\t' '\$4==\"V-04\"' '$D/verdicts.tsv' | grep -q . && ! grep -q 'V-04 PASS' '$WORK/hc.log'"
+wait_for "send t13 \\[판정\\] V-04" "$WORK/hc.log"
+check "검사 FAIL이어도 검증은 끝까지 돌아 판정을 남기고 작성 세션에만 알림" "awk -F'\t' '\$4==\"V-04\" && \$8==\"PASS\"' '$D/verdicts.tsv' | grep -q . && grep -q 'send t13 \\[판정\\] V-04 PASS' '$WORK/hc.log' && ! grep -q 'send t9 \\[완료\\] V-04' '$WORK/hc.log'"
 # 판정 줄을 남기지 않으면 BLOCKED, [배정] 원문이 없으면 실행하지 않음
 cd "$V/v1"; echo SILENT >"$V/verdict.next"; printf '목표: x\n' >"$V/crit.txt"; echo d >d.txt; vcommit d
 "$VF" --criteria "$V/crit.txt" V-05 >/dev/null 2>&1; rc=$?
@@ -681,17 +718,37 @@ out="$(CODEX_HOME="$V/codexhome" "$VF" --criteria "$V/crit.txt" V-09 2>&1)"; rc=
 check "codex 한도가 기준 이상이고 대체 도구가 없으면 띄우지 않고 [차단] 안내" "[ $rc -eq 7 ] && printf '%s' \"\$out\" | grep -q 'codex 한도 98%' && [ \"\$(wc -l <'$V/agent.log')\" -eq $n0 ] && [ \"\$('$VF' --status V-09)\" = NONE ]"
 set_env 's/^HERDR_VERIFIER_FALLBACK_TOOL=.*/HERDR_VERIFIER_FALLBACK_TOOL=claude/' "$P/.agents/harness.env"
 CODEX_HOME="$V/codexhome" "$VF" --criteria "$V/crit.txt" V-09 >/dev/null 2>&1; rc=$?
-check "대체 도구가 있으면 그 도구로 검증" "[ $rc -eq 0 ] && tail -n 1 '$V/agent.log' | grep -q -- '^-p .*--model opus --effort high'"
+check "대체 도구가 있으면 그 도구로 검증(모델 기본 fable)" "[ $rc -eq 0 ] && tail -n 1 '$V/agent.log' | grep -q -- '^-p .*--model fable --effort high'"
+# codex가 판정 없이 곧바로 끝나면(로그인·모델 거절 등) 대체 도구로 한 번 더 돌리고, ERROR로 세지 않는다
+cat >"$V/bin/codex-fail" <<'AGENT'
+#!/usr/bin/env bash
+case "$(basename "$0")" in codex) echo "codex: not logged in" >&2; exit 1 ;; esac
+exec "$(dirname "$0")/codex-real" "$@"
+AGENT
+chmod +x "$V/bin/codex-fail"; mv "$V/bin/codex" "$V/bin/codex-real"; rm "$V/bin/claude"; ln -s codex-real "$V/bin/claude"; cp "$V/bin/codex-fail" "$V/bin/codex"
+echo PASS >"$V/verdict.next"; echo k >k.txt; vcommit k
+"$VF" --criteria "$V/crit.txt" V-10 >/dev/null 2>&1; rc=$?
+rec="$(awk -F'\t' '$4 == "V-10" { r = $9 } END { print r }' "$D/verdicts.tsv")"
+check "codex가 판정 없이 끝나면 대체 도구로 다시 돌려 판정" "[ $rc -eq 0 ] && tail -n 1 '$V/agent.log' | grep -q -- '^-p .*--model fable' && [ \"\$(awk -F'\t' '\$4==\"V-10\"' '$D/verdicts.tsv' | cut -f8,10 | tr '\t' ' ')\" = 'PASS claude' ] && grep -q 'codex: not logged in' '$rec'"
+rm "$V/bin/codex"
+nocodex="$(printf '%s' "$PATH" | tr ':' '\n' | while IFS= read -r d; do [ -n "$d" ] && [ ! -x "$d/codex" ] && printf '%s:' "$d"; done)" # 실제 codex도 가린다
+echo PASS >"$V/verdict.next"; echo l >l.txt; vcommit l
+PATH="$nocodex" "$VF" --criteria "$V/crit.txt" V-11 >/dev/null 2>&1; rc=$?
+check "codex 명령이 없으면 대체 도구로 검증" "[ $rc -eq 0 ] && awk -F'\t' '\$4==\"V-11\" && \$8==\"PASS\" && \$10==\"claude\"' '$D/verdicts.tsv' | grep -q ."
 set_env 's/^HERDR_VERIFIER_FALLBACK_TOOL=.*/HERDR_VERIFIER_FALLBACK_TOOL=/' "$P/.agents/harness.env"
+echo m >m2.txt; vcommit m2
+out="$(PATH="$nocodex" "$VF" --criteria "$V/crit.txt" V-12 2>&1)"; rc=$?
+check "codex 명령이 없고 대체 도구도 없으면 띄우지 않음" "[ $rc -eq 7 ] && printf '%s' \"\$out\" | grep -q 'codex 명령을 찾지 못해'"
+rm "$V/bin/claude"; mv "$V/bin/codex-real" "$V/bin/codex"; ln -s codex "$V/bin/claude"; rm "$V/bin/codex-fail"
 # 디스크 가드: 여유가 모자라면 캐시를 정리하고, 그래도 모자라면 검사를 보류(끝 코드 5)
-mkdir -p "$WORK/cache/herdr/check/demo/worker-old" "$WORK/cache/herdr/check/demo/worker-busy"; : >"$WORK/cache/herdr/check/demo/worker-busy.lock"
-exec 8>"$WORK/cache/herdr/check/demo/worker-busy.lock"; flock 8
+mkdir -p "$WORK/cache/herdr/check/demo/worker-old" "$WORK/cache/herdr/check/demo/worker-busy" "$WORK/cache/herdr/check/demo/worker-busy.lockd"
+echo $$ >"$WORK/cache/herdr/check/demo/worker-busy.lockd/pid" # 살아 있는 프로세스(이 시험)가 쥔 잠금
 out="$(HERDR_PROJECT=demo "$P/.agents/bin/herdr-clean" --dry-run)"
 check "herdr-clean --dry-run은 지우지 않고 쓰는 중인 것은 건드리지 않음" "printf '%s' \"\$out\" | grep -q '지움: check/demo/worker-old' && printf '%s' \"\$out\" | grep -q '쓰는 중이라 둔다: check/demo/worker-busy' && [ -d '$WORK/cache/herdr/check/demo/worker-old' ]"
 set_env 's/^HERDR_MIN_DISK_GB=.*/HERDR_MIN_DISK_GB=999999/' "$P/.agents/harness.env"
 echo j >j.txt; vcommit j; out="$("$C" 2>&1)"; rc=$?
 check "디스크 여유가 모자라면 하네스 캐시를 정리하고 검사를 보류" "[ $rc -eq 5 ] && printf '%s' \"\$out\" | grep -q '코드 문제가 아니다' && [ ! -e '$WORK/cache/herdr/check/demo/worker-old' ] && [ -d '$WORK/cache/herdr/check/demo/worker-busy' ]"
-exec 8>&-
+rm -rf "$WORK/cache/herdr/check/demo/worker-busy.lockd"
 set_env 's/^HERDR_MIN_DISK_GB=.*/HERDR_MIN_DISK_GB=5/' "$P/.agents/harness.env"
 check "[배정] 원문이 없으면 실행하지 않음" "! '$VF' V-77 >/dev/null 2>&1 && { '$VF' V-77 2>&1 || true; } | grep -q -- '--criteria'"
 # 검증 설정이 비면 워커 설정(effort high), claude는 -p

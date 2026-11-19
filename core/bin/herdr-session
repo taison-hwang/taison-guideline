@@ -108,10 +108,11 @@ locked() { # 이름 설정값 인자 설정변수
 [[ -n "$MODEL_OVERRIDE" && -n "$ENV_MODEL" && "$MODEL_OVERRIDE" != "$ENV_MODEL" ]] && locked 모델 "$ENV_MODEL" "--model $MODEL_OVERRIDE" "$ENV_MODEL_VAR"
 [[ -n "$EFFORT_OVERRIDE" && -n "$ENV_EFFORT" && "$EFFORT_OVERRIDE" != "$ENV_EFFORT" ]] && locked effort "$ENV_EFFORT" "$EFFORT_OVERRIDE" "$ENV_EFFORT_VAR"
 case "$TOOL:$KIND" in
-  codex:commander | codex:orchestrator) MODEL=gpt-6.1-terra EFFORT=medium ;;
+  codex:commander) MODEL=gpt-6.1-sol EFFORT=high ;;
+  codex:orchestrator) MODEL=gpt-6.1-terra EFFORT=medium ;;
   codex:worker) MODEL=gpt-6.1-sol EFFORT=high ;;
   claude:commander) MODEL=sonnet EFFORT=medium ;;
-  claude:orchestrator) MODEL=opus EFFORT=high ;;
+  claude:orchestrator) MODEL=fable EFFORT=high ;;
   claude:worker) MODEL=opus EFFORT=medium ;;
   *) echo "알 수 없는 도구: $TOOL" >&2; usage ;;
 esac

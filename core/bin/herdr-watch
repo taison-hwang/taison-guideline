@@ -153,8 +153,9 @@ once() {
 case "${1:-}" in
   --once) once ;;
   --loop)
-    exec 9>"$state/lock"
-    command -v flock >/dev/null && { flock -n 9 || { echo "감시자가 이미 돈다" >&2; exit 0; }; }
+    . "$BIN/herdr-lock.sh"
+    herdr_lock "$state/lock" try || { echo "감시자가 이미 돈다" >&2; exit 0; }
+    trap 'herdr_unlock "$state/lock"' EXIT
     log "감시 시작(pid $$)"
     idle_since=$(date +%s)
     while :; do
@@ -180,8 +181,9 @@ case "${1:-}" in
     fi
     if [[ -f "$state/pid" ]] && kill -0 "$(cat "$state/pid")" 2>/dev/null; then echo "감시자: 이미 돈다(pid $(cat "$state/pid"))"; exit 0; fi
     detach=(nohup); command -v setsid >/dev/null && detach=(setsid nohup)
-    # 묶음 전체의 입출력을 돌리고 exec한다. 남은 셸 사본이 부른 쪽의 $() 파이프를 쥐면 부른 쪽이 끝나지 않고, pid도 루프가 아니게 된다
-    (cd "$ROOT" && HERDR_PROJECT="$PROJECT" exec "${detach[@]}" "$SELF" --loop) >>"$dir/watch.log" 2>&1 </dev/null &
+    # 리디렉션을 subshell 전체에 걸고 exec로 바꾼다. 중간 셸이 남아 부른 쪽의 출력 파이프를 쥐면 $(herdr-session …)이 끝나지 않는다.
+    # 비대화형 셸의 뒤 작업은 프로세스 그룹 리더가 아니라 setsid가 fork하지 않으므로 $!가 감시 루프의 번호다
+    (cd "$ROOT" || exit 1; HERDR_PROJECT="$PROJECT" exec "${detach[@]}" "$SELF" --loop) >>"$dir/watch.log" 2>&1 </dev/null &
     echo $! >"$state/pid"
     echo "감시자: 띄움(setsid, hc holder와 같이 끝날 수 있다)" ;;
   --stop)

@@ -76,13 +76,32 @@ update_agents_block() {
   rm -f "$tmp"
 }
 
-merge_note() { # 원본 대상
-  if [[ -e "$2" ]]; then
-    cmp -s "$1" "$2" || say "확인 필요: ${2#"$TARGET"/}가 이미 있어 하네스 hook을 넣지 않았다. $1 의 내용을 직접 합친다."
-  else
+merge_note() { # 원본 대상. 대상이 이미 있으면 하네스 hook 가운데 대상에 없는 것만 덧붙인다
+  local tmp
+  if [[ ! -e "$2" ]]; then
     mkdir -p "$(dirname "$2")"
     cp "$1" "$2"
     say "생성: ${2#"$TARGET"/}"
+    return 0
+  fi
+  tmp="$(mktemp)"
+  # 같은 이벤트의 어떤 명령이 하네스 명령을 품고 있으면(감싼 명령 포함) 이미 있는 것으로 본다. 대상의 다른 설정은 그대로 둔다
+  if ! jq --slurpfile src "$1" '
+      .hooks //= {} |
+      reduce ($src[0].hooks | to_entries[]) as $e (.;
+        [.hooks[$e.key][]?.hooks[]?.command] as $have |
+        .hooks[$e.key] = ((.hooks[$e.key] // []) + [$e.value[]
+          | .hooks |= map(select(.command as $c | any($have[]; contains($c)) | not))
+          | select(.hooks | length > 0)]))' "$2" >"$tmp" 2>/dev/null; then
+    rm -f "$tmp"
+    say "확인 필요: ${2#"$TARGET"/}를 JSON으로 읽지 못해 하네스 hook을 넣지 않았다. $1 의 내용을 직접 합친다."
+    return 0
+  fi
+  if [[ "$(jq -S . "$2")" == "$(jq -S . "$tmp")" ]]; then
+    rm -f "$tmp"
+  else
+    cat "$tmp" >"$2" && rm -f "$tmp"
+    say "합침: ${2#"$TARGET"/}에 빠진 하네스 hook을 덧붙였다"
   fi
 }
 

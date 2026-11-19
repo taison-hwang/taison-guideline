@@ -17,18 +17,17 @@ cache="${XDG_CACHE_HOME:-$HOME/.cache}/herdr"
 dir="$HOME/.claude/herdr/handoff/$project"
 size_kb() { du -sk "$@" 2>/dev/null | awk '{ s += $1 } END { print s + 0 }'; }
 freed=0 n=0
+. "$BIN/herdr-lock.sh"
 
 for wt in "$cache/check/$project"/* "$cache/verify/$project"/*; do
   [[ -d "$wt" ]] || continue
-  lock="$wt.lock"
-  # 잠금을 쥔 채 지운다(확인과 삭제 사이에 다른 검사가 잡지 못하게). flock이 없으면 쓰는 중인지 알 수 없어 두지 않는다
-  if [[ -e "$lock" ]] && ! command -v flock >/dev/null; then echo "잠금을 확인할 수 없어 둔다: ${wt#"$cache"/}"; continue; fi
-  exec 7>>"$lock"
-  if command -v flock >/dev/null && ! flock -n 7; then exec 7>&-; echo "쓰는 중이라 둔다: ${wt#"$cache"/}"; continue; fi
+  case "$wt" in *.lockd | *.lockd.stale.*) continue ;; esac # 잠금 폴더는 검사 폴더가 아니다
+  # 잠금을 쥔 채 지운다(확인과 삭제 사이에 다른 검사가 잡지 못하게). 살아 있는 프로세스가 쥐고 있으면 쓰는 중이라 둔다
+  herdr_lock "$wt" try || { echo "쓰는 중이라 둔다: ${wt#"$cache"/}"; continue; }
   kb="$(size_kb "$wt")"
   echo "지움: ${wt#"$cache"/} ($((kb / 1024))MB)"
   [[ $dry -eq 1 ]] || { git -C "$ROOT" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"; }
-  exec 7>&-
+  herdr_unlock "$wt"
   freed=$((freed + kb)) n=$((n + 1))
 done
 [[ $dry -eq 1 ]] || git -C "$ROOT" worktree prune 2>/dev/null
