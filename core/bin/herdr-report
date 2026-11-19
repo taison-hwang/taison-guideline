@@ -273,7 +273,7 @@ if [[ $mode == run ]]; then
        send "[진행] $task 커밋 $short 디스크 여유 부족으로 검사 보류" ;;
     *) [[ -n "$vpid" ]] && { kill -TERM "$vpid" 2>/dev/null; wait "$vpid" 2>/dev/null; }
        tag="${message%%\]*}]"
-       note="[검사 FAIL] $task 커밋 $short — $tag를 보내지 않았다. 로그: $HERDR_CHECK_LOG"
+       note="[검사 FAIL] $task 커밋 $short — ${tag}를 보내지 않았다. 로그: $HERDR_CHECK_LOG"
        note="$note. 고친 뒤 커밋해 herdr-report --bg로 다시 보낸다. 이 커밋 위에 쌓은 작업이 있으면 worker.md의 '쌓은 작업 옮기기'를 따른다."
        [[ -n "${HC_TERMINAL_ID:-}" ]] && hc send "$HC_TERMINAL_ID" "$note" >/dev/null
        send "[진행] $task 커밋 $short 검사 FAIL, 작성 세션이 고치는 중" ;;

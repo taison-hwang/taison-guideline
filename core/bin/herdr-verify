@@ -135,7 +135,7 @@ if [[ "$tool" == codex ]]; then
   read -r used resets <<<"$(codex_used_pct)"
   if [[ -n "${used:-}" && "$used" -ge "$HERDR_VERIFIER_LIMIT_PCT" ]]; then
     if [[ -n "$HERDR_VERIFIER_FALLBACK_TOOL" && "$HERDR_VERIFIER_FALLBACK_TOOL" != codex ]]; then
-      echo "codex 한도 ${used}%(재설정 $resets) ≥ ${HERDR_VERIFIER_LIMIT_PCT}% — 대체 도구 $HERDR_VERIFIER_FALLBACK_TOOL로 검증한다" >&2
+      echo "codex 한도 ${used}%(재설정 $resets) ≥ ${HERDR_VERIFIER_LIMIT_PCT}% — 대체 도구 ${HERDR_VERIFIER_FALLBACK_TOOL}로 검증한다" >&2
       tool="$HERDR_VERIFIER_FALLBACK_TOOL" model="$HERDR_VERIFIER_FALLBACK_MODEL" effort="${HERDR_VERIFIER_FALLBACK_EFFORT:-high}"
       [[ "$tool" == claude ]] && model="${model:-opus}"
     else

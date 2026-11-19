@@ -872,6 +872,7 @@ date +%s >"$D/.orchestrator.clear-request" # 죽은 Orchestrator가 남긴 정�
 wo
 check "재기동하면 이전 Orchestrator의 [CLEAR 요청]을 지움(재기동 메시지를 정리하지 않게)" "[ ! -f '$D/.orchestrator.clear-request' ]"
 check "holder_lost로 끝난 Orchestrator를 이전 도구로 재개와 함께 다시 띄움" "grep -q '^run --bg --json --outlive-parent --label role=orchestrator .*claude.*재개 — 이전 Orchestrator(t50)가 holder_lost로 끝나' '$WLOG' && grep -q 'worker-1(t51)' '$WLOG' && grep -q 'Orchestrator 자동 재기동' '$D/notify.log'"
+check "감시자가 다시 띄운 세션은 감시자를 또 띄우지 않음(환경 HERDR_WATCH=0이 harness.env보다 앞섬)" "[ ! -e '$D/watch/pid' ]"
 : >"$WLOG"; wo
 check "같은 종료는 한 번만 처리" "! grep -q '^run' '$WLOG'"
 printf '{"terminals":[{"address":"t52","state":"finished","reason":"killed","signal":9,"created_ms":3,"finished_ms":%s}]}\n' "$ms" >"$WD/orch.all"; : >"$WLOG"; wo
@@ -893,6 +894,11 @@ check "Commander가 있고 시한 전이면 감시자는 정리하지 않음" "!
 check "HERDR_WATCH=0이면 감시자를 띄우지 않음" "[ -z \"\$(HERDR_WATCH=0 '$WT' --ensure 2>&1)\" ]"
 res="$(echo '{"source":"startup"}' | HERDR_ROLE=commander HERDR_PROJECT=demo "$P/.agents/hooks/session-start.sh" | jq -r '.hookSpecificOutput.additionalContext')"
 check "Commander가 시작하면 전하지 못한 보고를 먼저 전하게 함" "printf '%s' \"\$res\" | grep -q '전하지 못한 보고' && printf '%s' \"\$res\" | grep -q 'pending-decisions.md'"
+# --ensure가 띄운 감시자 쪽이 부른 쪽의 $() 파이프를 쥐면 부른 쪽(herdr-session·herdr-report)이 끝나지 않는다
+PATH="$WORK/wstub:$PATH" XDG_RUNTIME_DIR=/nonexistent HERDR_WATCH=1 HERDR_PROJECT=demo "$WT" --ensure 2>&1 | cat >/dev/null & ep=$!
+for _ in $(seq 50); do kill -0 $ep 2>/dev/null || break; sleep 0.1; done
+check "--ensure는 부른 쪽의 출력 파이프를 붙잡지 않고, pid 파일은 감시 루프를 가리킴" "! kill -0 $ep 2>/dev/null && ps -o command= -p \"\$(cat '$D/watch/pid')\" | grep -q -- '--loop'"
+XDG_RUNTIME_DIR=/nonexistent HERDR_WATCH=1 HERDR_PROJECT=demo "$WT" --stop >/dev/null; kill $ep 2>/dev/null
 rm -rf "$D/watch" "$D/pending-decisions.md" "$D/.orchestrator.clear-request"; unset WD WLOG
 if command -v systemd-run >/dev/null && [ -S "${XDG_RUNTIME_DIR:-/x}/bus" ] && systemctl --user show-environment >/dev/null 2>&1; then
   check "herdr-scope: 자기 scope에서 메모리 상한을 걸고 끝 코드를 넘김" "out=\$(HERDR_SCOPE=1 '$P/.agents/bin/herdr-scope' smoke 64M -- bash -c 'cat /proc/self/cgroup; exit 7'); [ \$? -eq 7 ] && printf '%s' \"\$out\" | grep -q 'herdr-smoke-.*\\.scope'"

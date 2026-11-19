@@ -34,7 +34,7 @@ latest() { # 역할 → 그 역할의 살아 있는 세션 중 가장 최근에 
   printf '%s' "$best"
 }
 t="$(latest "$role")"
-[[ -n "$t" ]] || { echo "$project의 $role 세션을 찾지 못했다" >&2; exit 1; }
+[[ -n "$t" ]] || { echo "${project}의 $role 세션을 찾지 못했다" >&2; exit 1; }
 # hc get은 status를 {"app": …, "state": "done"|"working"} 객체로, hc ls는 문자열로 준다
 status_of() { hc get "$t" --json 2>/dev/null | jq -r '.status | if type == "object" then .state else . end // empty'; }
 if [[ $idle_only -eq 1 ]]; then
