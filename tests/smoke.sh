@@ -1234,6 +1234,7 @@ check "측정: Claude·Codex Orchestrator 기록에서 위반을 hook 규칙으�
 check "측정: 코드 직접 읽기는 참고로 따로 센다" "aud --audit | grep -q '코드 파일 직접 읽기: 1번 · 세션 1개'"
 out="$(aud --audit --tsv --since 2026-11-11)"
 check "측정: --since 뒤만" "[ \"\$(kinds)\" = 'git ' ]"
+check "측정은 hook 디렉터리에 __pycache__를 남기지 않음" "[ ! -e '$P/.agents/hooks/__pycache__' ]"
 check "측정: 다른 역할도 잴 수 있음" "aud --audit worker-1 --tsv | grep -q 'make check'"
 check "Orchestrator는 완료 선언 때 역할 경계를 잰다" "grep -q 'herdr-usage --audit --since' '$P/.agents/skills/running-herdr-autopilot/references/orchestrator.md'"
 rm -rf "$AD" "$CXA/rollout-2026-11-10T03-00-00-cx-audit.jsonl"

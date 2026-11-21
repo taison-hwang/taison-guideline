@@ -225,6 +225,7 @@ def load_role_rules():
     """역할 경계 규칙은 role-guard hook 한 곳에 있다. 같은 규칙으로 센다."""
     import importlib.machinery
     import importlib.util
+    sys.dont_write_bytecode = True  # hook 디렉터리에 __pycache__를 남기지 않는다(sync가 프로젝트로 옮긴다)
     path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "hooks", "role-guard.py")
     loader = importlib.machinery.SourceFileLoader("role_guard", path)
     spec = importlib.util.spec_from_loader("role_guard", loader)
