@@ -1,6 +1,6 @@
 ---
 name: running-herdr-autopilot
-description: herdr 자율주행 운영 규칙(Codex·Claude 공통). Commander·Orchestrator·워커 역할 분담, 세션 라벨·찾기·띄우기, 배정·보고 메시지, 사용자 승인 기준, 서브에이전트 사용 범위를 정한다. 터미널에 role 라벨(또는 HERDR_ROLE)이 있을 때, [배정]·[완료]·[차단]·재개 메시지를 받았을 때, 세션을 띄우거나 서브에이전트를 쓰기 직전에 사용한다. role이 없는 단일 세션에서는 쓰지 않는다.
+description: herdr 자율주행 운영 규칙(Codex·Claude 공통). Commander·Orchestrator·워커 역할 분담, 작업별 호출 명령(세션·보기 패널·메시지·검사·검증), 세션 라벨·찾기·띄우기, 배정·보고 메시지, 사용자 승인 기준, 서브에이전트 사용 범위를 정한다. 터미널에 role 라벨(또는 HERDR_ROLE)이 있을 때, [배정]·[완료]·[차단]·재개 메시지를 받았을 때, 세션·보기 패널을 다루거나 herdr·hc 명령을 부르거나 서브에이전트를 쓰기 직전에 사용한다. role이 없는 단일 세션에서는 쓰지 않는다.
 ---
 
 # herdr 자율주행
@@ -64,7 +64,7 @@ description: herdr 자율주행 운영 규칙(Codex·Claude 공통). Commander·
 
 Orchestrator는 같은 `project`의 Commander가 있어야 띄울 수 있다(실행기가 거부한다). 없으면 보고와 결정 요청이 사용자에게 닿지 않는다. 세션은 각자 systemd 사용자 scope에서 돌고, Commander·Orchestrator를 띄우면 hc 밖의 감시자(`herdr-watch`)가 함께 뜬다(`references/orchestrator.md`의 "감시자와 자동 복구").
 
-`--here`로 띄운 Commander의 herdr 패널이 있으면, 실행기가 Orchestrator·워커를 띄울 때 그 옆에 보기 패널을 자동으로 나눈다(`HERDR_VIEW_PANES`). 보기 패널을 직접 만들거나 닫지 않는다.
+`--here`로 띄운 Commander의 herdr 패널이 있으면, 실행기가 Orchestrator·워커를 띄울 때 그 옆에 보기 패널을 자동으로 나눈다(`HERDR_VIEW_PANES`). 보기 패널을 `herdr pane` 명령으로 직접 만들거나 닫지 않는다. 패널이 없거나 닫혔으면 `herdr-view --all`로 다시 연다.
 
 ```bash
 # 첫 임무는 --task로 넘긴다. 부팅 중인 세션에 hc send로 보내면 유실될 수 있다.
@@ -78,6 +78,28 @@ Orchestrator는 같은 `project`의 Commander가 있어야 띄울 수 있다(실
 ```bash
 hc ls --label "project=$HERDR_PROJECT" --label role=worker-1 | jq -r '.terminals[0].address // empty'
 ```
+
+## 작업별 호출
+
+하네스가 맡는 일은 아래 명령으로만 한다. 이름이 비슷한 다른 도구, 전역 스킬(다른 터미널·에이전트 관리 도구 등), `herdr pane`·`hc` 명령을 엮은 즉석 조합으로 바꾸지 않는다. `herdr-*`는 실행기가 PATH에 넣어 둔 `.agents/bin`의 명령이다.
+
+| 작업 | 명령 | 성공의 근거 |
+| --- | --- | --- |
+| 세션 띄우기 | `.agents/bin/herdr-session [--task "<첫 지시>"] [--here] <role>` | 출력된 hc 주소 |
+| 세션 찾기·상태 | `hc ls --label "project=$HERDR_PROJECT" --label role=<role>`, `hc get <t> --json` | JSON(`.terminals[].address`, `.status`, `.labels`) |
+| 세션 화면 읽기 | `hc read <t> [--lines N]` | 평문. JSON이 필요하면 `--json` |
+| 보기 패널 다시 열기(Commander) | `herdr-view --all` | `보기 패널: …` 줄 |
+| Commander → 다른 역할 | `herdr-tell [--to <role>] "<메시지>"` | `보냄: <role>(<t>)` |
+| Orchestrator → 워커 배정·병합 | `hc send <t> "[배정] …"` | 끝 코드 0 |
+| 워커·Orchestrator 보고 | `herdr-report [--bg] "[말머리] …"` | `보냄: …` 또는 뒤에서 돈다는 안내 |
+| 다른 세션 기다리기 | `hc wait <t>` | 돌아옴(완료 아님. 아래 "대기") |
+| 세션 정리·끝내기 | `herdr-clear [--send "<메시지>"] <role>`, `hc kill <t>` | 끝 코드 0 |
+| 검사·독립 검증 | `herdr-check`, `herdr-verify [--bg] <작업 ID>` | 기록(`herdr-check --status`, `herdr-verify --status <작업 ID>`) |
+| 사용자 알림·캐시 정리 | `herdr-notify "<제목>" "<본문>"`, `herdr-clean` | |
+
+- 명령의 사용법은 실행기를 인자 없이 실행하거나(`herdr-session`, `herdr-tell`, `herdr-view`) 파일 머리 주석에서 본다. 표에 없는 `herdr`·`hc` 하위 명령을 부를 때는 먼저 `<명령> --help`로 인자와 출력 형식을 확인한다. 인자를 추측하지 않는다. 예: `herdr pane process-info`는 위치 인자를 받지 않고 `--pane <ID>`를 받는다. `herdr` 제어 명령과 `hc`의 출력은 JSON이지만, 화면 읽기(`herdr pane read`, `--json` 없는 `hc read`)는 평문이므로 jq로 파싱하지 않는다(hook이 막는다). 인자 없는 `herdr`는 TUI를 띄우므로 실행하지 않는다.
+- 명령이 실패하면 오류와 사용법을 읽고 같은 명령을 고쳐 다시 부른다. 그래도 안 되면 다른 도구로 돌아가지 않고 `[차단]`으로 올린다(Commander는 사용자에게 묻는다).
+- 보냄과 완료를 나눈다. `보냄`·끝 코드 0은 받는 세션의 입력창에 들어갔다는 뜻까지다. 받은 세션이 실행했는지와 성공했는지는 그 세션의 `[완료]`·`[차단]` 보고와 그 근거(커밋, 검사·판정 기록)로만 판단한다. 보낸 것만으로 작업이 됐다고 보고하지 않는다. 보고에는 "전달함"과 "완료 확인함"을 구분해 쓴다.
 
 ## 메시지
 

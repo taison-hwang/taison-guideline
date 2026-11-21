@@ -6,6 +6,7 @@
 #   백그라운드 herdr-report(도구의 run_in_background, 끝의 &): 보고 시각이 다음 턴으로 밀려 Stop hook이 미보고로 본다
 #   커밋 검사 건너뛰기(core.hooksPath=/dev/null, --no-verify)
 #   git merge·rebase 출력을 파이프로 넘긴 뒤 &&로 잇기: 파이프가 실패를 가려 다음 단계가 이어진다
+#   화면 평문(herdr pane read, --json 없는 hc read)을 jq로 파싱: 평문이라 jq가 실패한다(ohmystock Commander 2026-11-21)
 # 따옴표 안 글자와 히어독 본문은 보지 않는다. 명령을 읽지 못하면 막지 않는다.
 command -v jq >/dev/null || exit 0
 input="$(cat)"
@@ -37,5 +38,8 @@ if printf '%s\n' "$plain" | grep -Eq 'core\.hooksPath=/dev/null|git[[:space:]][^
 fi
 if printf '%s\n' "$plain" | grep -Eq 'git[[:space:]]+(-C[[:space:]]+[^[:space:]]+[[:space:]]+)?(merge|rebase)([[:space:]]([^;&|]|[0-9]?>&[0-9])*)?\|[^|;&][^;&|]*&&'; then
   deny "git merge·rebase 출력을 파이프(| tail 등)로 넘긴 뒤 &&로 잇지 않는다. 파이프의 끝 코드는 tail의 것이라 병합이 실패해도 다음 단계가 돈다. 병합을 따로 실행하고 끝 코드를 본 뒤 잇는다."
+fi
+if printf '%s\n' "$plain" | grep -oE '(herdr[[:space:]]+pane|hc)[[:space:]]+read([^;&|]|[0-9]?>&[0-9])*\|[[:space:]]*jq' | grep -qv -- '--json'; then
+  deny "화면 읽기(herdr pane read, hc read)는 평문을 낸다. jq로 파싱하지 않는다. 구조화된 값이 필요하면 hc read --json, hc get <t> --json, herdr pane get·process-info --pane <ID>(JSON)를 쓴다. 인자와 출력 형식은 <명령> --help로 확인한다."
 fi
 exit 0

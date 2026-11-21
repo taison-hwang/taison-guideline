@@ -1079,6 +1079,23 @@ set_env 's/^HERDR_VIEW_PANES=.*/HERDR_VIEW_PANES=0/' "$P/.agents/harness.env"
 : >"$HLOG"; PATH="$WORK/hcstub:$WORK/hstub:$PATH" VIEWS="" HERDR_VIEW_ANCHOR=w1:p1 "$S" worker-1 codex >/dev/null 2>&1
 check "HERDR_VIEW_PANES=0이면 만들지 않음" "! grep -q '^pane split' '$HLOG'"
 set_env 's/^HERDR_VIEW_PANES=.*/HERDR_VIEW_PANES=1/' "$P/.agents/harness.env"
+mkdir -p "$WORK/hcall"
+cat >"$WORK/hcall/hc" <<'EOF'
+#!/usr/bin/env bash
+# 가짜 hc: demo 프로젝트에 commander t1, orchestrator t2, worker-1 t3, 역할 없는 t4
+case "$1" in
+  ls) [[ "$*" == *"--label project=demo"* ]] && echo '{"terminals":[{"address":"t1"},{"address":"t2"},{"address":"t3"},{"address":"t4"}]}' || echo '{"terminals":[]}' ;;
+  get) case "$2" in t1) r=commander ;; t2) r=orchestrator ;; t3) r=worker-1 ;; *) r= ;; esac
+    [[ -n "$r" ]] && echo "{\"labels\":{\"project\":\"demo\",\"role\":\"$r\"}}" || echo '{"labels":{}}' ;;
+esac
+EOF
+chmod +x "$WORK/hcall/hc"
+: >"$HLOG"; out="$(PATH="$WORK/hcall:$WORK/hstub:$PATH" VIEWS="w1:p2/hc:orchestrator/10" HERDR_PROJECT=demo HERDR_VIEW_ANCHOR=w1:p1 "$V" --all 2>&1)"; rc=$?
+check "--all: 보기 패널이 없는 세션만 연다(Commander·역할 없는 세션 제외)" "[ $rc -eq 0 ] && grep -q '^pane run w1:p9 hc attach t3; exit' '$HLOG' && [ \"\$(grep -c '^pane split' '$HLOG')\" -eq 1 ] && ! grep -q 't1\\|t4' '$HLOG'"
+check "--all: 이미 있는 패널과 확인한 수를 알림" "printf '%s' \"\$out\" | grep -q '이미 있다(hc:orchestrator)' && printf '%s' \"\$out\" | grep -q 'demo 세션 2개'"
+: >"$HLOG"; PATH="$WORK/hcall:$WORK/hstub:$PATH" VIEWS="" HERDR_PROJECT=demo HERDR_PANE_ID=w1:p1 env -u HERDR_VIEW_ANCHOR "$V" --all 2>/dev/null
+check "--all: 기준이 없으면 지금 패널(HERDR_PANE_ID)" "grep -q '^pane split w1:p1 --direction right' '$HLOG'"
+check "--all: 기준 패널을 모르면 사용법 실패" "! env -u HERDR_VIEW_ANCHOR -u HERDR_PANE_ID HERDR_PROJECT=demo PATH='$WORK/hcall:$WORK/hstub:$PATH' '$V' --all 2>/dev/null"
 unset HLOG
 
 echo "== 문서"
@@ -1111,8 +1128,31 @@ check "실제 기록의 오탐: 2>&1, 큰따옴표 안 작은따옴표, merge-ba
 check "커밋 검사 건너뛰기 막음" "blocks /bin/zsh 'git -c core.hooksPath=/dev/null commit -qm x' && blocks /bin/zsh 'git commit --no-verify -m x'"
 check "메시지 안의 --no-verify는 통과" "guard /bin/zsh 'git commit -m \"--no-verify 금지 규칙 추가\"'"
 check "병합 출력을 파이프로 넘기고 &&로 이으면 막음" "blocks /bin/zsh 'git merge --ff-only b | tail -3 && git branch -d b' && blocks /bin/zsh 'git rebase main 2>&1 | tail -2 && git log -1' && guard /bin/zsh 'git rebase main 2>&1 | tail -2; git status' && guard /bin/zsh 'git merge --ff-only b && git branch -d b'"
+check "화면 평문(herdr pane read, hc read)을 jq로 넘기면 막음" "blocks /bin/zsh 'herdr pane read w4:pW | jq .' && blocks /bin/zsh 'herdr pane read w4:pW --lines 20 2>&1 | jq -r .x' && blocks /bin/zsh 'hc read t13x | jq .'"
+check "JSON 출력·평문 그대로 읽기는 통과" "guard /bin/zsh 'hc read t13x --json | jq -r .screen' && guard /bin/zsh 'herdr pane process-info --pane w4:pW | jq .result' && guard /bin/zsh 'herdr pane read w4:pW --lines 5 2>&1 | tail -3' && guard /bin/zsh 'herdr pane read w4:pW; hc ls | jq .' && guard /bin/zsh 'echo \"herdr pane read x | jq\"'"
 check "apply_patch 본문은 보지 않음" "guard /bin/zsh '*** Add File: x\n+git commit --no-verify' false apply_patch"
 check "Claude·Codex 설정에 PreToolUse 등록" "jq -e '.hooks.PreToolUse[] | select(.matcher == \"Bash\") | .hooks[] | select(.command | endswith(\"bash-guard.sh\"))' '$P/.claude/settings.json' >/dev/null && jq -e '.hooks.PreToolUse[].hooks[] | select(.command | endswith(\"bash-guard.sh\"))' '$P/.codex/hooks.json' >/dev/null"
+
+echo "== 작업별 호출 계약"
+SK="$P/.agents/skills/running-herdr-autopilot/SKILL.md"
+calls="$(awk '/^## 작업별 호출/{f=1;next} /^## /{f=0} f && /^\|/' "$SK" | grep -o '`[^`]*`' | tr -d '`[]')"
+check "표에 호출이 있다" "printf '%s\n' \"\$calls\" | grep -q '^herdr-view --all' && printf '%s\n' \"\$calls\" | grep -q '^herdr-tell'"
+bad=""
+while read -r call; do
+  set -f; set -- $call; set +f
+  case "$1" in
+    herdr-* | .agents/bin/herdr-*) f="$P/.agents/bin/${1##*/}"
+      if [ ! -x "$f" ]; then bad+=" $1(없음)"; continue; fi
+      for w in "$@"; do case "$w" in --[a-z]*) grep -q -- "$w" "$f" || bad+=" $1$w" ;; esac; done ;;
+    hc) command -v hc >/dev/null || continue
+      help="$(hc "$2" --help 2>&1)" || { bad+=" hc-$2(도움말 실패)"; continue; }
+      for w in "$@"; do case "$w" in --[a-z]*) printf '%s' "$help" | grep -q -- "$w" || bad+=" hc-$2$w" ;; esac; done ;;
+  esac
+done <<<"$calls"
+check "표의 실행기·hc 하위 명령과 옵션이 실제 사용법에 있다(${bad:-모두 있음})" "[ -z '$bad' ]"
+if command -v herdr >/dev/null; then
+  check "herdr CLI: process-info는 --pane을 받고 위치 인자는 거부, pane read는 JSON 형식이 없다" "herdr pane process-info --help 2>&1 | grep -q -- '--pane' && ! herdr pane process-info w0:p0 >/dev/null 2>&1 && ! herdr pane read --help 2>&1 | grep -qi json"
+fi
 
 echo "== 되풀이 오류 세기"
 ED="$HOME/.claude/herdr/handoff/errdemo"; mkdir -p "$ED" "$WORK/err"

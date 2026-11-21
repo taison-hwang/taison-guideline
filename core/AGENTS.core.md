@@ -1,6 +1,6 @@
 ## 하네스 기본 규칙
 
-- 역할: role이 있는 세션은 `.agents/skills/running-herdr-autopilot/SKILL.md`로 그 역할을 맡는다. 전역 지침이 `~/.agents/skills/operating-herdr-sessions`를 가리켜도 이 저장소에서는 읽지 않는다. role이 없으면 단일 작업 세션으로 일하며 herdr 스킬은 쓰지 않는다.
+- 역할: role이 있는 세션은 `.agents/skills/running-herdr-autopilot/SKILL.md`로 그 역할을 맡고, 세션·보기 패널·메시지·검사·검증은 그 스킬의 "작업별 호출" 표의 명령으로만 한다. 같은 일을 다루는 전역 스킬(`~/.agents/skills/operating-herdr-sessions`, 다른 터미널·에이전트 관리 도구의 스킬)은 이 저장소에 적용되지 않는다. role이 없으면 단일 작업 세션으로 일하며 herdr 스킬은 쓰지 않는다.
 - 시작: 프로젝트의 목적·경계·승인 원칙은 `intent.md`로 먼저 확인한다.
 - 직접 처리: 작업은 본 세션에서 직접 한다. 서브에이전트는 의존성 없는 검색과 구현에 대한 독립 리뷰에만 쓴다.
 - 상태: 다음 세션에 필요한 것은 커밋, 상태판, 작업 상태 파일에 남긴다. 대화에만 있는 내용은 사라진다고 가정한다.

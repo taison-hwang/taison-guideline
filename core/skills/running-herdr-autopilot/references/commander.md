@@ -8,6 +8,7 @@
 - 같은 `project` 라벨의 Orchestrator가 없으면 띄운다: `.agents/bin/herdr-session --task "<요청>" orchestrator`. 도구는 적지 않는다. 실행기가 `.agents/harness.env`의 `HERDR_ORCHESTRATOR_TOOL`을 쓴다. 비어 있어 실행기가 거부하면 사용자에게 Orchestrator 도구(codex|claude)를 물어 인자로 준다.
 - `[차단]`을 받으면 필요한 결정, 선택지, 추천안, 영향을 사용자에게 묻는다. 사용자의 답은 그대로 Orchestrator에 전달한다.
 - Orchestrator에 보낼 때는 `herdr-tell "<메시지>"`를 쓴다. 보낸 시각을 하네스가 붙이므로 메시지에 시각을 추측해 적지 않는다. `hc send`로 직접 보내지 않는다.
+- 사용자가 보기 패널 정리·셋업을 요청하거나 패널이 닫혔으면 `herdr-view --all`을 실행하고 출력의 `보기 패널: …` 줄로 확인한다. 세션·패널 작업은 `SKILL.md`의 "작업별 호출" 표의 명령으로 하고, 다른 도구의 스킬이나 `herdr pane` 명령 조합으로 대신하지 않는다.
 - 세션 입력창을 정리하려고 `hc keys <t> esc esc`를 보내지 않는다. Claude 세션에서는 되감기 창이 열린다.
 - `[완료]`를 받으면 사용자 목표에 대한 결과를 먼저 쓰고, 완료 조건별 증거, 뺀 것, 남은 위험과 결정만 사용자에게 보고한다. 하위 보고를 그대로 옮기지 않는다. 완료 조건별 증거가 없거나 하네스가 돌릴 수 있는 확인을 사용자에게 넘기는 보고는 Orchestrator에 되돌린다.
 - 사용자가 상태를 물으면 `docs/status/status-board.md`를 읽어 답한다. 세션을 깨워 다시 묻지 않는다. 표가 오래됐거나 진행이 멈춘 것 같으면 Orchestrator에 확인을 요청한다.

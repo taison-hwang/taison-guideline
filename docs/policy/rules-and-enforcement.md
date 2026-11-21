@@ -6,9 +6,10 @@
 
 | 규칙 | 강제 수단 | 전제 | 제거 시험 |
 | --- | --- | --- | --- |
-| 측정에서 되풀이된 셸 함정을 쓰지 않는다(zsh `=` 낱말, `timeout`·백그라운드 `herdr-report`, 커밋 검사 건너뛰기, 병합 출력 파이프 뒤 `&&`) | `PreToolUse` hook(`bash-guard.sh`) | 문구로 적어도 되풀이된다. jobtailor 역할 세션 50개의 Bash 명령 7,941개 중 192개(2.4%)가 걸리고, 표본은 모두 실제 사례였다(2026-11-12) | hook을 끄고 `herdr-usage --errors`로 같은 오류 모양의 세션 수를 견준다 |
+| 측정에서 되풀이된 셸 함정을 쓰지 않는다(zsh `=` 낱말, `timeout`·백그라운드 `herdr-report`, 커밋 검사 건너뛰기, 병합 출력 파이프 뒤 `&&`, 화면 평문(`herdr pane read`·`hc read`)을 jq로 파싱) | `PreToolUse` hook(`bash-guard.sh`) | 문구로 적어도 되풀이된다. jobtailor 역할 세션 50개의 Bash 명령 7,941개 중 192개(2.4%)가 걸리고, 표본은 모두 실제 사례였다(2026-11-12) | hook을 끄고 `herdr-usage --errors`로 같은 오류 모양의 세션 수를 견준다 |
 | 정산 때 되풀이 오류를 본다 | Orchestrator 8절 문구, `herdr-usage --errors` | Orchestrator는 받은 보고 안에서만 되풀이를 센다. zsh `== not found`는 역할 세션 30개에서 69번 났지만 보고되지 않았다 | 두 묶음 동안 막을 수단이 하나도 나오지 않으면 8절 문구를 뺀다 |
 | 모든 워커 턴은 보고로 끝난다 | `Stop` hook(`worker-turn.sh`), `[미보고]` | 화면에만 쓰고 보고를 빠뜨려 진행이 멈춘다(실측) | hook을 끄고 미보고 빈도를 잰다 |
+| 하네스가 맡는 일(세션·보기 패널·메시지·검사·검증)은 스킬의 "작업별 호출" 표의 명령으로 하고, 표에 없는 `herdr`·`hc` 명령은 `--help`로 인자와 출력 형식을 확인한 뒤 부른다. 보냄과 완료를 나눠 보고한다 | 표 문구, `SessionStart` 주입, 빠져 있던 정식 경로(`herdr-view --all`), smoke의 호출 계약 시험(표의 실행기·`hc` 옵션이 실제 사용법에 있는지) | 정식 경로가 없거나 표가 틀리면 전역 스킬과 추측한 명령으로 우회한다. ohmystock Commander(2026-11-21)는 보기 패널 셋업 요청에 전역 `orca-cli` 스킬을 읽고, `herdr pane process-info <ID>`(정식은 `--pane <ID>`)와 평문인 `herdr pane read` 출력의 jq 파싱으로 오류를 냈다 | 주입 문구를 빼고 세션·패널 요청에서 표 밖 도구를 고르는지 본다 |
 | 세션은 시작·정리 뒤 역할을 받는다 | `SessionStart` hook(`session-start.sh`) | 지침 안내만으로는 전역 스킬을 읽는다(실측) | 전역 스킬을 정리한 뒤 주입을 줄여 본다 |
 | compact 뒤 상태를 복구한다 | `PreCompact`·`SessionStart` hook | compact 요약이 수용 기준과 결정을 잃을 수 있다 | 복구 주입을 끄고 재작업을 비교한다 |
 | 워커 수 상한 | 실행기(`herdr-session`, `kind` 라벨). `--here`로 연 패널은 세지 않는다 | 세션이 많으면 비용과 충돌이 늘어난다 | 상한을 바꿔 완료 시간과 비용을 잰다(`herdr-flow`, `herdr-usage`) |
