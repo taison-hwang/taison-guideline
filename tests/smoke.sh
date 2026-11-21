@@ -488,6 +488,23 @@ echo h3 >h3.txt; fcommit heavy3
 check "무거운 단계만 있어도 검사, 대기열 대기는 시간 제한·실행 시간에 넣지 않음" "[ \"\$('$C' --status)\" = NONE ] && '$C' >/dev/null 2>&1 && tail -n 1 '$D/checks.tsv' | awk -F'\t' '\$6 == \"PASS\" && \$8 >= 2 && \$7 < 2' | grep -q ."
 wait
 set_env 's/^HERDR_CHECK_HEAVY_CMD=.*/HERDR_CHECK_HEAVY_CMD=/; s/^HERDR_CHECK_TIMEOUT=.*/HERDR_CHECK_TIMEOUT=3600/' "$P/.agents/harness.env"
+# 같은 역할·같은 SHA의 전체 검사가 이미 돌면 새로 넣지 않고 그 결과를 함께 씀
+export HERDR_ROLE=worker-14; cd "$F"; rm -f count.log "$D/.worker-14.check"
+set_env 's/^HERDR_CHECK_CMD=.*/HERDR_CHECK_CMD=/; s/^HERDR_CHECK_HEAVY_CMD=.*/HERDR_CHECK_HEAVY_CMD="echo run >>count.log; sleep 1.5"/' "$P/.agents/harness.env"
+echo d1 >d1.txt; fcommit dup1
+"$C" >"$WORK/dup1.out" 2>&1 & dpid1=$!; sleep 0.5
+"$C" >"$WORK/dup2.out" 2>&1; drc2=$?; wait $dpid1; drc1=$?
+check "같은 SHA 검사가 돌고 있으면 두 번째는 새로 돌지 않고 그 결과(PASS)를 씀" "[ $drc1 -eq 0 ] && [ $drc2 -eq 0 ] && [ \"\$(wc -l <count.log)\" -eq 1 ] && grep -q '같은 SHA.*이미 돌고 있다' '$WORK/dup2.out' && grep -q '앞서 돈 같은 SHA의 검사 결과를 씀' '$WORK/dup2.out' && [ \"\$(grep -c worker-14 '$D/checks.tsv')\" -eq 1 ]"
+rm -f count.log "$D/.worker-14.check"
+set_env 's/^HERDR_CHECK_HEAVY_CMD=.*/HERDR_CHECK_HEAVY_CMD="echo run >>count.log; sleep 1.5; false"/' "$P/.agents/harness.env"
+echo d2 >d2.txt; fcommit dup2
+"$C" >"$WORK/dup1.out" 2>&1 & dpid1=$!; sleep 0.5
+"$C" >"$WORK/dup2.out" 2>&1; drc2=$?; wait $dpid1; drc1=$?
+check "앞 검사가 FAIL이면 기다린 검사도 그 FAIL을 쓰고 다시 돌지 않음" "[ $drc1 -eq 1 ] && [ $drc2 -eq 1 ] && [ \"\$(wc -l <count.log)\" -eq 1 ]"
+set_env 's/^HERDR_CHECK_HEAVY_CMD=.*/HERDR_CHECK_HEAVY_CMD=true/' "$P/.agents/harness.env"
+echo d3 >d3.txt; fcommit dup3; "$C" >/dev/null 2>&1; rm -f count.log
+check "이미 PASS 기록이 있는 SHA는 다시 돌지 않음" "'$C' 2>&1 | grep -q '이미 통과했다' && [ ! -e count.log ]"
+set_env 's/^HERDR_CHECK_HEAVY_CMD=.*/HERDR_CHECK_HEAVY_CMD=/' "$P/.agents/harness.env"
 
 echo "== 뒤에서 도는 검사와 쌓기"
 export HERDR_ROLE=worker-9 HC_TERMINAL_ID=t77 XDG_CACHE_HOME="$WORK/cache"; oldpath="$PATH"; export PATH="$WORK/stub2:$PATH"
@@ -950,8 +967,18 @@ check "Commander가 없고 전하지 못한 보고가 있으면 사용자에게 
 n="$(grep -c '결정 요청' "$D/notify.log")"; wo
 check "다시 알리기는 HERDR_WATCH_RENOTIFY 간격" "[ \"\$(grep -c '결정 요청' '$D/notify.log')\" = $n ]"
 echo '{"terminals":[{"address":"t61","state":"live","status":"done","created_ms":9}]}' >"$WD/orch.live"; echo '{"status":{"app":"claude-code","state":"done"}}' >"$WD/get.json"
-echo "$(($(date +%s) - 4000))" >"$D/.orchestrator.clear-request"; : >"$WLOG"; wo
+req=$(($(date +%s) - 4000)); echo "$req" >"$D/.orchestrator.clear-request"; : >"$WLOG"
+# 요청 앞의 clear, 요청 뒤의 compact, 다른 역할의 clear는 처리로 세지 않는다
+rm -f "$D/sessions.tsv"; printf 'epoch\ttime\trole\ttool\tmodel\tsession_id\tsource\ttranscript\n' >"$D/sessions.tsv"
+printf '%s\tt\torchestrator\tclaude\tm\ts1\tclear\t\n%s\tt\torchestrator\tclaude\tm\ts1\tcompact\t\n%s\tt\tworker-1\tclaude\tm\ts2\tclear\t\n' "$((req - 60))" "$((req + 60))" "$((req + 60))" >>"$D/sessions.tsv"
+wo
 check "처리되지 않은 [CLEAR 요청]은 감시자가 쉬는 Orchestrator를 대신 정리" "grep -qx 'keys t61 / c l e a r enter' '$WLOG' && grep -qx 'send t61 재개' '$WLOG' && [ ! -f '$D/.orchestrator.clear-request' ]"
+# Commander가 herdr-clear 없이 직접 /clear를 쳐 표시가 남은 경우: 요청 뒤 Orchestrator의 clear 기록이 있으면 다시 정리하지 않음
+echo "$req" >"$D/.orchestrator.clear-request"; : >"$WLOG"
+printf '%s\tt\torchestrator\tclaude\tm\ts3\tclear\t\n' "$((req + 30))" >>"$D/sessions.tsv"
+wo
+check "이미 정리된 [CLEAR 요청]으로 Orchestrator를 두 번 정리하지 않고 표시를 지움" "! grep -q '^keys' '$WLOG' && ! grep -q '^send' '$WLOG' && [ ! -f '$D/.orchestrator.clear-request' ] && grep -q '이미 정리돼 지움' '$D/watch.log'"
+rm -f "$D/sessions.tsv"
 echo "$(date +%s)" >"$D/.orchestrator.clear-request"; echo '{"terminals":[{"address":"t7","state":"live"}]}' >"$WD/cmd.live"; : >"$WLOG"; wo
 check "Commander가 있고 시한 전이면 감시자는 정리하지 않음" "! grep -q '^keys' '$WLOG' && [ -f '$D/.orchestrator.clear-request' ]"
 check "HERDR_WATCH=0이면 감시자를 띄우지 않음" "[ -z \"\$(HERDR_WATCH=0 '$WT' --ensure 2>&1)\" ]"
@@ -968,6 +995,44 @@ if command -v systemd-run >/dev/null && [ -S "${XDG_RUNTIME_DIR:-/x}/bus" ] && s
 fi
 check "herdr-scope: HERDR_SCOPE=0이면 그대로 실행" "[ \"\$(HERDR_SCOPE=0 '$P/.agents/bin/herdr-scope' x 1G -- echo ok)\" = ok ]"
 
+echo "== 넓은 패턴 kill 막기"
+GK="$P/.agents/hooks/guard-kill.py"; GM="$WORK/gk-main"; git init -q -b main "$GM"; git -C "$GM" -c user.email=t@t -c user.name=t commit -q --allow-empty -m i
+git -C "$GM" worktree add -q "$WORK/gk-wt" -b gkwt
+gk() { # 작업 위치 명령 → hook 끝 코드(HERDR_ROLE=worker-1)
+  jq -n --arg c "$2" --arg d "$1" '{tool_name: "Bash", cwd: $d, tool_input: {command: $c}}' | HERDR_ROLE=worker-1 "$GK" >"$WORK/gk.err" 2>&1
+}
+blocked() { gk "$1" "$2"; [ $? -eq 2 ]; }
+passes() { gk "$1" "$2"; [ $? -eq 0 ]; }
+check "막음: 패턴으로 대기열 실행 전체를 죽이는 pkill(실제 사고)" "blocked '$GM' 'pkill -f \"herdr-queue run --role\"' && grep -q '막음' '$WORK/gk.err' && grep -q 'herdr-queue cancel' '$WORK/gk.err'"
+check "막음: linked worktree에서도 경로 없는 패턴" "blocked '$WORK/gk-wt' 'cd app && pkill -f \"make app-it\"'"
+check "막음: killall, pkill -u, pkill 이름" "blocked '$GM' 'killall node' && blocked '$GM' 'pkill -9 -u \$USER' && blocked '$GM' 'sleep 1; pkill chrome'"
+check "막음: pgrep·ps 결과를 kill에 넘김" "blocked '$GM' 'kill \$(pgrep -f vite)' && blocked '$GM' 'pgrep -f vite | xargs kill -9' && blocked '$GM' 'ps aux | grep vite | awk \"{print \\\$2}\" | xargs kill'"
+check "막음: 메인 체크아웃 경로로 좁혀도(세션의 명령줄에 들어 있다)" "blocked '$GM' 'pkill -f \"$GM/frontend\"' && blocked '$GM' 'pkill -f \"$GM\"'"
+check "막음: worktree 최상위 경로만(자기 세션 명령줄에도 맞는다)" "blocked '$WORK/gk-wt' 'pkill -f \"$WORK/gk-wt\"'"
+check "통과: PID로 죽이는 kill" "passes '$GM' 'kill 12345' && passes '$GM' 'sleep 100 & kill -9 \$!' && passes '$GM' 'kill -TERM \$pid; wait \$pid'"
+check "통과: 자기 worktree 경로로 좁힌 pkill·pgrep" "passes '$WORK/gk-wt' 'pkill -f \"$WORK/gk-wt/node_modules/.bin/vite\"' && passes '$WORK/gk-wt' 'pkill -f \"\$PWD/app/build\"' && passes '$WORK/gk-wt' 'kill \$(pgrep -f \"$WORK/gk-wt/server\")'"
+check "통과: pkill -P <PID>(그 PID의 자식만)와 명령 안의 글자" "passes '$GM' 'pkill -P 4242' && passes '$GM' 'git commit -m \"pkill -f x 금지\"' && passes '$GM' 'grep -n pkill README.md' && passes '$GM' 'echo killall'"
+check "통과: 따옴표·heredoc 안의 글자(커밋 메시지, 검색어)" "passes '$GM' 'git commit -m \"stop; pkill -f vite\"' && passes '$GM' 'grep -rn \"kill \$(pgrep\" docs/' && passes '$GM' \"\$(printf 'git commit -F - <<EOF\\npkill -f x\\nEOF')\""
+check "막음: 래퍼·sh -c·kill -1·for 루프 우회" "blocked '$GM' 'timeout 5 pkill -f vite' && blocked '$GM' \"bash -c 'pkill -f vite'\" && blocked '$GM' 'kill -9 -1' && blocked '$GM' 'for p in \$(pgrep vite); do kill \$p; done'"
+check "역할이 없는 세션에는 적용하지 않음" "jq -n '{tool_name:\"Bash\",cwd:\"$GM\",tool_input:{command:\"pkill -f x\"}}' | env -u HERDR_ROLE '$GK'"
+check "입력이 깨졌거나 Bash가 아니면 조용히 넘어감" "echo 'not json' | HERDR_ROLE=worker-1 '$GK' && echo '{}' | HERDR_ROLE=worker-1 '$GK'"
+check "hook 설정: Claude Bash 사전 hook" "jq -e '.hooks.PreToolUse[] | select(.matcher == \"Bash\") | .hooks[] | select(.command | endswith(\"guard-kill.py\"))' '$P/.claude/settings.json' >/dev/null"
+check "hook 설정: Codex Bash 사전 hook" "jq -e '.hooks.PreToolUse[] | select(.matcher == \"^Bash\$\") | .hooks[] | select(.command | endswith(\"guard-kill.py\"))' '$P/.codex/hooks.json' >/dev/null"
+# herdr-queue cancel: 부른 세션의 프로젝트·역할 표만 멈춘다(가짜 프로세스, 시험 전용 대기열 디렉터리)
+export HERDR_HEAVY_DIR="$WORK/heavy-cancel" HERDR_HEAVY_POLL=0.1 HERDR_PROJECT=demo
+Q="$P/.agents/bin/herdr-queue"; mkdir -p "$HERDR_HEAVY_DIR"
+"$Q" run --role ra --sha aaa -- sleep 30 2>/dev/null & qa=$!; sleep 0.5
+"$Q" run --project other --role ra --sha bbb -- sleep 30 2>/dev/null & qo=$!; sleep 0.3
+"$Q" run --role rb --sha ccc -- sleep 30 2>/dev/null & qb=$!; sleep 0.3
+"$Q" run --role ra --sha ddd -- sleep 30 2>/dev/null & qw=$!; sleep 0.3
+out="$(HERDR_PROJECT=demo HERDR_ROLE=ra "$Q" cancel 2>&1)"; sleep 1
+check "cancel: 부른 세션의 프로젝트·역할 표(실행과 대기)만 멈춘다" "! kill -0 $qa 2>/dev/null && ! kill -0 $qw 2>/dev/null && kill -0 $qo 2>/dev/null && kill -0 $qb 2>/dev/null && printf '%s' \"\$out\" | grep -q '취소: demo/ra'"
+check "cancel: 멈춘 실행의 자식(명령)도 함께 끝나고 다른 역할·프로젝트의 표는 그대로" "! pgrep -f 'sleep 30' | grep -q '^\$' || [ \"\$(HERDR_PROJECT=demo '$Q' | grep -cE 'ra|rb')\" -ge 2 ]"
+kill $qo $qb 2>/dev/null; wait 2>/dev/null
+out="$(HERDR_PROJECT=demo HERDR_ROLE=ra "$Q" cancel 2>&1)"
+check "cancel: 취소할 것이 없으면 그렇게 알림" "printf '%s' \"\$out\" | grep -q '취소할 검사가 없다'"
+check "cancel: 프로젝트·역할을 모르는 세션은 거부" "! env -u HERDR_ROLE -u HERDR_PROJECT '$Q' cancel >/dev/null 2>&1"
+unset HERDR_HEAVY_DIR HERDR_HEAVY_POLL HERDR_PROJECT HERDR_ROLE
 echo "== 보기 패널"
 check "--here는 사용자 패널을 기준으로 넘김" "env -u HC_TERMINAL_ID HERDR_PANE_ID=w9:p1 '$S' --dry-run --here commander codex | grep -q 'HERDR_VIEW_ANCHOR=w9:p1'"
 check "자식 세션에 기준 패널 전달" "HERDR_VIEW_ANCHOR=w9:p1 HERDR_PANE_ID=w0:p0 '$S' --dry-run worker-1 codex | grep -q 'HERDR_VIEW_ANCHOR=w9:p1'"
@@ -1047,7 +1112,7 @@ check "커밋 검사 건너뛰기 막음" "blocks /bin/zsh 'git -c core.hooksPat
 check "메시지 안의 --no-verify는 통과" "guard /bin/zsh 'git commit -m \"--no-verify 금지 규칙 추가\"'"
 check "병합 출력을 파이프로 넘기고 &&로 이으면 막음" "blocks /bin/zsh 'git merge --ff-only b | tail -3 && git branch -d b' && blocks /bin/zsh 'git rebase main 2>&1 | tail -2 && git log -1' && guard /bin/zsh 'git rebase main 2>&1 | tail -2; git status' && guard /bin/zsh 'git merge --ff-only b && git branch -d b'"
 check "apply_patch 본문은 보지 않음" "guard /bin/zsh '*** Add File: x\n+git commit --no-verify' false apply_patch"
-check "Claude·Codex 설정에 PreToolUse 등록" "jq -e '.hooks.PreToolUse[] | select(.matcher == \"Bash\") | .hooks[].command | test(\"bash-guard.sh\")' '$P/.claude/settings.json' >/dev/null && jq -e '.hooks.PreToolUse[].hooks[].command | test(\"bash-guard.sh\")' '$P/.codex/hooks.json' >/dev/null"
+check "Claude·Codex 설정에 PreToolUse 등록" "jq -e '.hooks.PreToolUse[] | select(.matcher == \"Bash\") | .hooks[] | select(.command | endswith(\"bash-guard.sh\"))' '$P/.claude/settings.json' >/dev/null && jq -e '.hooks.PreToolUse[].hooks[] | select(.command | endswith(\"bash-guard.sh\"))' '$P/.codex/hooks.json' >/dev/null"
 
 echo "== 되풀이 오류 세기"
 ED="$HOME/.claude/herdr/handoff/errdemo"; mkdir -p "$ED" "$WORK/err"

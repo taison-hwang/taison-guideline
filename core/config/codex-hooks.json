@@ -5,6 +5,12 @@
         "hooks": [
           { "type": "command", "command": "\"$(git rev-parse --show-toplevel)\"/.agents/hooks/bash-guard.sh", "timeout": 10 }
         ]
+      },
+      {
+        "matcher": "^Bash$",
+        "hooks": [
+          { "type": "command", "command": "\"$(git rev-parse --show-toplevel)\"/.agents/hooks/guard-kill.py", "timeout": 10 }
+        ]
       }
     ],
     "PostToolUse": [

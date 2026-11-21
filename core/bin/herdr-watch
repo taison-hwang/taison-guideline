@@ -123,6 +123,11 @@ check_clear() {
   local req="$dir/.orchestrator.clear-request" since now out
   [[ -f "$req" ]] || return 0
   since="$(head -n 1 "$req" 2>/dev/null)"; since="${since:-0}"; now=$(date +%s)
+  # 요청 뒤에 Orchestrator가 /clear(또는 새로 시작)된 기록이 있으면 이미 처리된 요청이다. Commander가 herdr-clear 대신
+  # 직접 /clear를 쳤으면 표시가 남는다. /clear는 터미널을 새로 만들지 않아 아래 "더 나중에 뜬" 판단으로는 걸러지지 않는다
+  if awk -F'\t' -v s="$since" '$3 == "orchestrator" && ($7 == "clear" || $7 == "startup") && $1 + 0 >= s { f = 1 } END { exit !f }' "$dir/sessions.tsv" 2>/dev/null; then
+    rm -f "$req"; log "[CLEAR 요청]은 요청 뒤 Orchestrator가 이미 정리돼 지움"; return 0
+  fi
   if [[ "$(live_count commander)" -gt 0 && $((now - since)) -lt "$HERDR_CLEAR_TIMEOUT" ]]; then return 0; fi
   [[ "$(live_count orchestrator)" -gt 0 ]] || { rm -f "$req"; return 0; }
   # 요청보다 나중에 뜬 Orchestrator(재기동·교체)에는 해당하지 않는다
