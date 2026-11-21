@@ -146,6 +146,8 @@ merge_note "$HARNESS/core/config/claude-settings.json" "$TARGET/.claude/settings
 merge_note "$HARNESS/core/config/codex-hooks.json" "$TARGET/.codex/hooks.json"
 
 touch "$TARGET/.gitignore"
+# 끝 줄에 줄바꿈이 없으면 덧붙인 줄이 그 줄에 이어 붙어 두 규칙이 모두 깨진다(uni-auth: .serena//docs/.worktrees/)
+[[ ! -s "$TARGET/.gitignore" || -z "$(tail -c 1 "$TARGET/.gitignore")" ]] || echo >>"$TARGET/.gitignore"
 for ignored in /docs/.worktrees/ /graft/ /.ignore; do
   grep -qxF "$ignored" "$TARGET/.gitignore" || { echo "$ignored" >>"$TARGET/.gitignore"; say "추가: .gitignore에 $ignored"; }
 done
