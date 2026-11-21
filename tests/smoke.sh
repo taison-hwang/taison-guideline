@@ -1182,6 +1182,62 @@ check "기준 세션 수를 바꿀 수 있음" "[ \"\$(errs --errors 1 | sed 1d 
 check "Orchestrator는 완료 선언 때 되풀이 오류를 봄" "grep -q 'herdr-usage --errors --since' '$P/.agents/skills/running-herdr-autopilot/references/orchestrator.md'"
 check "--since 뒤의 오류만" "[ \"\$(errs --errors 1 --since 2026-11-11 | sed 1d | wc -l | tr -d ' ')\" = 0 ]"
 
+echo "== Orchestrator 역할 경계(role-guard)"
+RG="$P/.agents/hooks/role-guard.py"
+# rg <역할> <도구> <명령|경로>: 막으면 끝 코드 2
+rg() {
+  local j
+  case "$2" in
+    Bash | apply_patch) j="$(jq -nc --arg t "$2" --arg c "$3" --arg d "$P" '{tool_name:$t,cwd:$d,tool_input:{command:$c}}')" ;;
+    *) j="$(jq -nc --arg t "$2" --arg f "$3" --arg d "$P" '{tool_name:$t,cwd:$d,tool_input:{file_path:$f}}')" ;;
+  esac
+  printf '%s' "$j" | HERDR_ROLE="$1" python3 "$RG" 2>/dev/null
+}
+rblocks() { rg orchestrator "$@"; [ $? -eq 2 ]; }
+check "역할 경계: 코드·방향 문서 편집 막음(Claude 편집, Codex patch, 셸 쓰기)" "rblocks Edit '$P/src/a.go' && rblocks Write '$P/docs/design/x.md' && rblocks apply_patch \$'*** Begin Patch\n*** Update File: app/main.dart\n*** End Patch' && rblocks Bash \"sed -i 's/a/b/' src/a.go\" && rblocks Bash 'echo x > src/a.ts'"
+check "역할 경계: 검사·테스트·빌드 실행 막음" "rblocks Bash 'make check' && rblocks Bash 'cd docs/.worktrees/x && go test ./...' && rblocks Bash 'npx vitest run' && rblocks Bash '.agents/bin/herdr-check --affected main' && rblocks Bash 'herdr-verify A-01' && rblocks Bash \"bash -c 'npm test'\""
+check "역할 경계: 병합·이력 변경과 상태 문서 밖 커밋 막음" "rblocks Bash 'git merge --ff-only b' && rblocks Bash 'git -C x rebase main' && rblocks Bash 'git push' && rblocks Bash 'git worktree remove docs/.worktrees/x' && rblocks Bash 'git add src/a.go && git commit -m x'"
+check "역할 경계: 상태 문서·세션 장부·임시 파일 편집과 그 커밋은 통과" "rg orchestrator Edit '$P/docs/status/status-board.md' && rg orchestrator Write '$P/docs/progress/2026-11-22--x.md' && rg orchestrator Write \"\$HOME/.claude/herdr/handoff/demo/session-ledger.md\" && rg orchestrator Bash 'git add docs/status/work-plan.md && git commit -q -m \"상태판\"' && rg orchestrator Bash 'H=~/.claude/herdr/handoff/demo; printf x >> \$H/received.tsv'"
+check "역할 경계: 조회, 지시 메시지 안의 명령 이름, 도움말은 통과" "rg orchestrator Bash 'herdr-check --status-of abc1234; herdr-verify --status A-01; git log -3; git merge-base --is-ancestor a main; git worktree list' && rg orchestrator Bash 'hc send t1 \"[병합] herdr-check --affected main 뒤 git merge --ff-only\"' && rg orchestrator Bash 'herdr-verify -h'"
+check "역할 경계: 다른 역할은 보지 않음" "rg worker-1 Bash 'make check' && rg commander Edit '$P/src/a.go'"
+set_env 's/^HERDR_ROLE_GUARD=.*/HERDR_ROLE_GUARD=0/' "$P/.agents/harness.env"
+check "역할 경계: HERDR_ROLE_GUARD=0이면 막지 않음" "rg orchestrator Bash 'make check'"
+set_env 's/^HERDR_ROLE_GUARD=.*/HERDR_ROLE_GUARD=1/' "$P/.agents/harness.env"
+check "역할 경계: Claude·Codex 설정에 등록" "jq -e '.hooks.PreToolUse[] | select(.matcher | test(\"Edit\") and test(\"Bash\")) | .hooks[] | select(.command | endswith(\"role-guard.py\"))' '$P/.claude/settings.json' >/dev/null && jq -e '.hooks.PreToolUse[] | select(.matcher == null) | .hooks[] | select(.command | endswith(\"role-guard.py\"))' '$P/.codex/hooks.json' >/dev/null"
+
+AD="$HOME/.claude/herdr/handoff/auditdemo"; rm -rf "$AD"; mkdir -p "$AD" "$WORK/audit"
+printf 'epoch\ttime\trole\ttool\tmodel\tsession_id\tsource\ttranscript\n' >"$AD/sessions.tsv"
+tu() { jq -nc --arg ts "$1" --arg n "$2" --argjson i "$3" '{type:"assistant",timestamp:$ts,cwd:"/r",message:{content:[{type:"tool_use",id:"x",name:$n,input:$i}]}}'; }
+{
+  tu 2026-11-10T01:00:00Z Edit '{"file_path":"/r/src/a.go"}'
+  tu 2026-11-10T01:01:00Z Edit '{"file_path":"/r/docs/status/status-board.md"}'
+  tu 2026-11-10T01:02:00Z Bash '{"command":"go test ./..."}'
+  tu 2026-11-10T01:03:00Z Bash '{"command":"hc send t1 \"go test 하고 [완료]\""}'
+  tu 2026-11-10T01:04:00Z Read '{"file_path":"/r/src/a.go"}'
+  tu 2026-11-12T01:00:00Z Bash '{"command":"git merge --ff-only b"}'
+} >"$WORK/audit/o1.jsonl"
+tu 2026-11-10T02:00:00Z Bash '{"command":"make check"}' >"$WORK/audit/w1.jsonl"
+CXA="$HOME/.codex/sessions/2026/11/10"; mkdir -p "$CXA"
+{
+  echo '{"type":"turn_context","payload":{"cwd":"/r","model":"m"}}'
+  jq -nc --arg i 'text(await tools.exec_command({cmd:"cargo test --all","max_output_tokens":100}));
+text(await tools.apply_patch("*** Begin Patch\n*** Update File: /r/src/b.rs\n@@\n-a\n+b\n*** End Patch\n"));
+text(await tools.exec_command({cmd:"git log --oneline -3"}));' '{type:"response_item",timestamp:"2026-11-10T03:00:00Z",payload:{type:"custom_tool_call",name:"exec",input:$i}}'
+} >"$CXA/rollout-2026-11-10T03-00-00-cx-audit.jsonl"
+printf '1\tx\torchestrator\tclaude\tm\to1\tstartup\t%s\n' "$WORK/audit/o1.jsonl" >>"$AD/sessions.tsv"
+printf '1\tx\tworker-1\tclaude\tm\tw1\tstartup\t%s\n' "$WORK/audit/w1.jsonl" >>"$AD/sessions.tsv"
+printf '1\tx\torchestrator\tcodex\tm\tcx-audit\tstartup\t\n' >>"$AD/sessions.tsv"
+aud() { "$P/.agents/bin/herdr-usage" --project auditdemo "$@"; }
+out="$(aud --audit --tsv)"
+kinds() { printf '%s\n' "$out" | sed 1d | cut -f3 | sort | tr '\n' ' '; }
+check "측정: Claude·Codex Orchestrator 기록에서 위반을 hook 규칙으로 센다(워커·메시지 안 명령·상태판 제외)" "[ \"\$(kinds)\" = 'check check edit edit git ' ] && ! printf '%s\n' \"\$out\" | grep -q 'make check'"
+check "측정: 코드 직접 읽기는 참고로 따로 센다" "aud --audit | grep -q '코드 파일 직접 읽기: 1번 · 세션 1개'"
+out="$(aud --audit --tsv --since 2026-11-11)"
+check "측정: --since 뒤만" "[ \"\$(kinds)\" = 'git ' ]"
+check "측정: 다른 역할도 잴 수 있음" "aud --audit worker-1 --tsv | grep -q 'make check'"
+check "Orchestrator는 완료 선언 때 역할 경계를 잰다" "grep -q 'herdr-usage --audit --since' '$P/.agents/skills/running-herdr-autopilot/references/orchestrator.md'"
+rm -rf "$AD" "$CXA/rollout-2026-11-10T03-00-00-cx-audit.jsonl"
+
 check "저장소 전체 링크" "python3 -I '$ROOT/core/skills/writing-project-docs/scripts/check_md_links.py' '$ROOT/README.md' '$ROOT/core' '$ROOT/docs' '$ROOT/templates' >/dev/null"
 check "설치된 docs 색인" "python3 -I '$ROOT/core/skills/writing-project-docs/scripts/check_md_links.py' '$P/docs' >/dev/null"
 
